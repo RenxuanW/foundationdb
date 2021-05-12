@@ -22,6 +22,7 @@
 #include <time.h>
 
 #include "fdbclient/BackupAgent.actor.h"
+#include "fdbclient/MutationLogReader.actor.h"
 #include "fdbrpc/simulator.h"
 #include "flow/ActorCollection.h"
 #include "flow/actorcompiler.h" // has to be last include
@@ -579,6 +580,7 @@ ACTOR Future<int> dumpData(Database cx,
 				for (int i = 0; i < group.items.size(); ++i) {
 					bw.serializeBytes(group.items[i].value);
 				}
+				// renxuan: still needs to be called
 				decodeBackupLogValue(req.arena,
 				                     req.transaction.mutations,
 				                     mutationSize,
