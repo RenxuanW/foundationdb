@@ -34,6 +34,12 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	                                ? CLIENT_KNOBS->BACKUP_SIMULATED_LIMIT_BYTES
 	                                : CLIENT_KNOBS->BACKUP_GET_RANGE_LIMIT_BYTES);
 
+	state Future<RangeResultBlock> previousResult = RangeResultBlock{ .result = RangeResult(),
+		                                                              .firstVersion = self->currentBeginVersion,
+		                                                              .lastVersion = self->currentBeginVersion - 1,
+		                                                              .hash = self->hash,
+		                                                              .indexToRead = 0 };
+
 	loop {
 		try {
 			tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
@@ -41,27 +47,32 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 
 			if (self->reads.size() > self->pipelineDepth) {
 				wait(self->t.onTrigger());
-				self->reads.pop_front();
 			}
+			RangeResultBlock p = wait(previousResult);
 
-			KeySelector begin = firstGreaterOrEqual(versionToKeyRef(self->currentBeginVersion, self->prefix)),
+			KeySelector begin = firstGreaterOrEqual(versionToKeyRef(p.lastVersion + 1, self->prefix)),
 			            end = firstGreaterOrEqual(versionToKeyRef(self->endVersion, self->prefix));
-
-			self->reads.push_back(RangeResultBlock{ .beginVersion = self->currentBeginVersion,
-			                                        .endVersion = std::numeric_limits<int64_t>::min(),
-			                                        .result = tr.getRange(begin, end, limits),
-			                                        .hash = self->hash });
-
-			state RangeResult rangevalue = wait(self->reads.back().result);
-
-			if (rangevalue.more) {
-				Version lastReadVersion = keyRefToVersion(rangevalue.readThrough.get(), self->prefix);
-				self->reads.back().endVersion = lastReadVersion;
-				self->currentBeginVersion = lastReadVersion + 1; // keyRefToVersion(rangevalue.end()[-1].key) + 1;
-			} else {
-				self->finished = true;
+			previousResult = map(tr.getRange(begin, end, limits), [&](const RangeResult& rangevalue) {
+				// parse the first and last versions and put them in local variables firstVersion, lastVersion
+				// int indexToRead = 0;
+				if (rangevalue.more) {
+					Version lastVersion = keyRefToVersion(rangevalue.readThrough.get(), self->prefix);
+					return RangeResultBlock{ .result = rangevalue,
+						                     .firstVersion = p.lastVersion + 1,
+						                     .lastVersion = lastVersion,
+						                     .hash = self->hash,
+						                     .indexToRead = 0 };
+				} else {
+					self->finished = true;
+					return RangeResultBlock{
+						.result = RangeResult(), .firstVersion = -1, .lastVersion = -1, .hash = self->hash
+					};
+				}
+			});
+			if (self->finished) {
 				return Void();
 			}
+			self->reads.push_back(previousResult);
 		} catch (Error& e) {
 			if (e.code() == error_code_transaction_too_old) {
 				// We are using this transaction until it's too old and then resetting to a fresh one,

@@ -33,15 +33,36 @@
 #include "flow/ActorCollection.h"
 #include "flow/actorcompiler.h" // has to be last include
 
+KeyRef versionToKeyRef(Version version, const Key& prefix);
+Version keyRefToVersion(const KeyRef& key, const Key& prefix);
+
 struct RangeResultBlock {
-	Version beginVersion;
-	Version endVersion; // not filled in until result.isReady()
-	Future<RangeResult> result;
+	RangeResult result;
+	Version firstVersion;
+	Version lastVersion; // not filled in until result.isReady()
 	uint8_t hash; // points back to the PipelinedReader
+	int indexToRead;
+
+	Standalone<RangeResultRef> consume(const Key& prefix) {
+		Version stopVersion =
+		    std::min(lastVersion + 1,
+		             (firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) /
+		                 CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions,
+		                                                      // using the knob for that
+		int startIndex = indexToRead;
+		while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
+			++indexToRead;
+		}
+		firstVersion = keyRefToVersion(result[indexToRead].key, prefix); // the version of result[indexToRead]
+		return Standalone<RangeResultRef>(
+		    RangeResultRef(result.slice(startIndex, indexToRead), result.more, result.readThrough), result.arena());
+	}
+
+	bool empty() { return indexToRead == result.size(); }
 
 	bool operator<(const RangeResultBlock& r) const {
 		// We want a min heap. The standard C++ priority queue is a max heap.
-		return beginVersion > r.beginVersion;
+		return firstVersion > r.firstVersion;
 	}
 };
 
@@ -57,7 +78,7 @@ public:
 
 	void trigger() { t.trigger(); }
 
-	std::deque<RangeResultBlock> reads;
+	std::deque<Future<RangeResultBlock>> reads;
 
 private:
 	uint8_t hash;
@@ -68,9 +89,6 @@ private:
 	AsyncTrigger t;
 };
 
-KeyRef versionToKeyRef(Version version, const Key& prefix);
-Version keyRefToVersion(const KeyRef& key, const Key& prefix);
-
 class MutationLogReader {
 public:
 	MutationLogReader(Database cx, Version bv, Version ev, Key uid, KeyRef beginKey, int pd)
@@ -78,10 +96,10 @@ public:
 		for (uint8_t h = 0; h < 256; ++h) {
 			pipelinedReaders.emplace_back(h, beginVersion, endVersion, pipelineDepth, prefix);
 			pipelinedReaders[h].getNext(cx);
-			priorityQueue.push(pipelinedReaders[h].reads.front());
+			// priorityQueue.push(pipelinedReaders[h].reads.front());
 		}
 	}
-	// Future<RangeResult> getNext(Database cx);
+	// ACTOR VectorRef<KeyValueRef> getNext(Database cx);
 
 private:
 	std::vector<PipelinedReader> pipelinedReaders;
