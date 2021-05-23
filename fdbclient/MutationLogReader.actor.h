@@ -47,8 +47,7 @@ struct RangeResultBlock {
 		Version stopVersion =
 		    std::min(lastVersion + 1,
 		             (firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) /
-		                 CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions,
-		                                                      // using the knob for that
+		                 CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions
 		int startIndex = indexToRead;
 		while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
 			++indexToRead;
@@ -78,11 +77,13 @@ public:
 
 	void trigger() { t.trigger(); }
 
+	bool isFinished() { return finished; }
+
 	std::deque<Future<RangeResultBlock>> reads;
+	Key prefix; // "\xff\x02/alog/UID/hash/" for restore, or "\xff\x02/blog/UID/hash/" for backup
 
 private:
 	uint8_t hash;
-	Key prefix; // "\xff\x02/alog/UID/hash/" for restore, or "\xff\x02/blog/UID/hash/" for backup
 	Version beginVersion, endVersion, currentBeginVersion;
 	int pipelineDepth;
 	bool finished = false;
@@ -96,10 +97,16 @@ public:
 		for (uint8_t h = 0; h < 256; ++h) {
 			pipelinedReaders.emplace_back(h, beginVersion, endVersion, pipelineDepth, prefix);
 			pipelinedReaders[h].getNext(cx);
-			// priorityQueue.push(pipelinedReaders[h].reads.front());
 		}
+		wait(initializePQ());
 	}
-	// ACTOR VectorRef<KeyValueRef> getNext(Database cx);
+	ACTOR static Future<Void> initializePQ(MutationLogReader* self);
+
+	// Should always call isFinished() before calling getNext.
+	Future<Standalone<RangeResultRef>> getNext();
+	ACTOR Future<Standalone<RangeResultRef>> getNext_impl(MutationLogReader* self);
+
+	bool isFinished() { return finished; }
 
 private:
 	std::vector<PipelinedReader> pipelinedReaders;

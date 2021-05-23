@@ -22,6 +22,16 @@
 #include "fdbrpc/simulator.h"
 #include "flow/UnitTest.h"
 
+KeyRef versionToKeyRef(Version version, const Key& prefix) {
+	uint64_t versionBigEndian = bigEndian64(version);
+	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
+}
+
+Version keyRefToVersion(const KeyRef& key, const Key& prefix) {
+	KeyRef keyWithoutPrefix = key.removePrefix(prefix);
+	return (Version)bigEndian64(*((uint64_t*)keyWithoutPrefix.begin()));
+}
+
 Future<Void> PipelinedReader::getNext(Database cx) {
 	return getNext_impl(this, cx);
 }
@@ -53,8 +63,6 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			KeySelector begin = firstGreaterOrEqual(versionToKeyRef(p.lastVersion + 1, self->prefix)),
 			            end = firstGreaterOrEqual(versionToKeyRef(self->endVersion, self->prefix));
 			previousResult = map(tr.getRange(begin, end, limits), [&](const RangeResult& rangevalue) {
-				// parse the first and last versions and put them in local variables firstVersion, lastVersion
-				// int indexToRead = 0;
 				if (rangevalue.more) {
 					Version lastVersion = keyRefToVersion(rangevalue.readThrough.get(), self->prefix);
 					return RangeResultBlock{ .result = rangevalue,
@@ -85,29 +93,37 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	}
 }
 
-KeyRef versionToKeyRef(Version version, const Key& prefix) {
-	uint64_t versionBigEndian = bigEndian64(version);
-	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
+ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
+	state uint8_t h;
+	for (h = 0; h < 256; ++h) {
+		RangeResultBlock front = wait(self->pipelinedReaders[h].reads.front());
+		self->priorityQueue.push(front);
+	}
+	return Void();
 }
 
-Version keyRefToVersion(const KeyRef& key, const Key& prefix) {
-	KeyRef keyWithoutPrefix = key.removePrefix(prefix);
-	return (Version)bigEndian64(*((uint64_t*)keyWithoutPrefix.begin()));
+Future<Standalone<RangeResultRef>> MutationLogReader::getNext() {
+	return getNext_impl(this);
 }
 
-// Future<RangeResult> MutationLogReader::getNext(Database cx) {
-//     RangeResultBlock* top = priorityQueue.top();
-//     priorityQueue.pop();
-//     uint8_t hash = top->hash;
-
-//     if (!pipelinedReaders[hash].finished) {
-//         pipelinedReaders[hash].getNext(cx);
-//     }
-
-//     Future<RangeResult> rangeResult = top.rangeResult;
-//     delete(top);
-//     return rangeResult;
-// }
+ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(MutationLogReader* self) {
+	RangeResultBlock top = self->priorityQueue.top();
+	self->priorityQueue.pop();
+	uint8_t hash = top.hash;
+	Key prefix = self->pipelinedReaders[hash].prefix;
+	state Standalone<RangeResultRef> ret = top.consume(prefix);
+	if (top.empty()) {
+		self->pipelinedReaders[hash].reads.pop_front();
+		self->pipelinedReaders[hash].trigger();
+		if (!self->pipelinedReaders[hash].reads.empty()) {
+			RangeResultBlock next = wait(self->pipelinedReaders[hash].reads.front());
+			self->priorityQueue.push(next);
+		}
+	} else {
+		self->priorityQueue.push(top);
+	}
+	return ret;
+}
 
 // UNIT TESTS
 TEST_CASE("/fdbclient/mutationlogreader/VersionKeyRefConversion") {
