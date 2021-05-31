@@ -33,7 +33,7 @@
 #include "flow/ActorCollection.h"
 #include "flow/actorcompiler.h" // has to be last include
 
-KeyRef versionToKeyRef(Version version, const Key& prefix);
+Key versionToKey(Version version, const Key& prefix);
 Version keyRefToVersion(const KeyRef& key, const Key& prefix);
 
 struct RangeResultBlock {

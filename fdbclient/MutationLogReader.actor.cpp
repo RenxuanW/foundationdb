@@ -22,7 +22,7 @@
 #include "fdbrpc/simulator.h"
 #include "flow/UnitTest.h"
 
-KeyRef versionToKeyRef(Version version, const Key& prefix) {
+Key versionToKey(Version version, const Key& prefix) {
 	uint64_t versionBigEndian = bigEndian64(version);
 	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
 }
@@ -67,8 +67,11 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 				return Void();
 			}
 
-			KeySelector begin = firstGreaterOrEqual(versionToKeyRef(p.lastVersion + 1, self->prefix)),
-			            end = firstGreaterOrEqual(versionToKeyRef(self->endVersion, self->prefix));
+			// Key wtf1 = versionToKey(p.lastVersion + 1, self->prefix);
+			// Key wtf2 = versionToKey(self->endVersion, self->prefix);
+
+			KeySelector begin = firstGreaterOrEqual(versionToKey(p.lastVersion + 1, self->prefix)),
+			            end = firstGreaterOrEqual(versionToKey(self->endVersion, self->prefix));
 
 			std::cout << "litian 3 " << (int)hash << " " << begin.toString() << " " << end.toString() << std::endl;
 
@@ -154,12 +157,12 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 TEST_CASE("/fdbclient/mutationlogreader/VersionKeyRefConversion") {
 	Key prefix = LiteralStringRef("foos");
 
-	ASSERT(keyRefToVersion(versionToKeyRef(0, prefix), prefix) == 0);
-	ASSERT(keyRefToVersion(versionToKeyRef(1, prefix), prefix) == 1);
-	ASSERT(keyRefToVersion(versionToKeyRef(-1, prefix), prefix) == -1);
-	ASSERT(keyRefToVersion(versionToKeyRef(std::numeric_limits<int64_t>::min(), prefix), prefix) ==
+	ASSERT(keyRefToVersion(versionToKey(0, prefix), prefix) == 0);
+	ASSERT(keyRefToVersion(versionToKey(1, prefix), prefix) == 1);
+	ASSERT(keyRefToVersion(versionToKey(-1, prefix), prefix) == -1);
+	ASSERT(keyRefToVersion(versionToKey(std::numeric_limits<int64_t>::min(), prefix), prefix) ==
 	       std::numeric_limits<int64_t>::min());
-	ASSERT(keyRefToVersion(versionToKeyRef(std::numeric_limits<int64_t>::max(), prefix), prefix) ==
+	ASSERT(keyRefToVersion(versionToKey(std::numeric_limits<int64_t>::max(), prefix), prefix) ==
 	       std::numeric_limits<int64_t>::max());
 
 	return Void();
