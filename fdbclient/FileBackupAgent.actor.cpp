@@ -23,6 +23,7 @@
 #include "fdbclient/DatabaseContext.h"
 #include "fdbclient/Knobs.h"
 #include "fdbclient/ManagementAPI.actor.h"
+#include "fdbclient/MutationLogReader.actor.h"
 #include "fdbclient/Status.h"
 #include "fdbclient/SystemData.h"
 #include "fdbclient/KeyBackedTypes.h"
@@ -2016,18 +2017,7 @@ struct BackupLogRangeTaskFunc : BackupTaskFuncBase {
 			}
 		}
 
-		Key destUidValue = wait(config.destUidValue().getOrThrow(tr));
-
-		// Get the set of key ranges that hold mutations for (beginVersion, endVersion).  They will be queried in
-		// parallel below and there is a limit on how many we want to process in a single BackupLogRangeTask so if that
-		// limit is exceeded then set the addBackupLogRangeTasks boolean in Params and stop, signalling the finish()
-		// step to break up the (beginVersion, endVersion) range into smaller intervals which are then processed by
-		// individual BackupLogRangeTasks.
-		state Standalone<VectorRef<KeyRangeRef>> ranges = getLogRanges(beginVersion, endVersion, destUidValue);
-		if (ranges.size() > CLIENT_KNOBS->BACKUP_MAX_LOG_RANGES) {
-			Params.addBackupLogRangeTasks().set(task, true);
-			return Void();
-		}
+		state Key destUidValue = wait(config.destUidValue().getOrThrow(tr));
 
 		// Block size must be at least large enough for 1 max size key, 1 max size value, and overhead, so
 		// conservatively 125k.
@@ -2036,35 +2026,29 @@ struct BackupLogRangeTaskFunc : BackupTaskFuncBase {
 		state Reference<IBackupFile> outFile = wait(bc->writeLogFile(beginVersion, endVersion, blockSize));
 		state LogFileWriter logFile(outFile, blockSize);
 
-		// Query all key ranges covering (beginVersion, endVersion) in parallel, writing their results to the results
-		// promise stream as they are received.  Note that this means the records read from the results stream are not
-		// likely to be in increasing Version order.
-		state PromiseStream<RangeResultWithVersion> results;
-		state std::vector<Future<Void>> rc;
+		// Start the parallel read/merge
+		state Reference<MutationLogReader> reader = wait(MutationLogReader::Create(
+		    cx, beginVersion, endVersion, destUidValue, backupLogKeys.begin, /*pipelineDepth=*/3));
+		// wait(success(reader.initializePQ()));
 
-		for (auto& range : ranges) {
-			rc.push_back(readCommitted(cx, results, lock, range, false, true, true));
-		}
+		std::cout << "litian ooo" << std::endl;
 
-		state Future<Void> sendEOS = map(errorOr(waitForAll(rc)), [=](ErrorOr<Void> const& result) {
-			if (result.isError())
-				results.sendError(result.getError());
-			else
-				results.sendError(end_of_stream());
-			return Void();
-		});
-
-		state Version lastVersion;
 		try {
 			loop {
-				state RangeResultWithVersion r = waitNext(results.getFuture());
-				lock->release(r.first.expectedSize());
+				state Standalone<RangeResultRef> nextResultSet =
+				    wait(reader->getNext()); // or whatever the function is called
 
-				state int i = 0;
-				for (; i < r.first.size(); ++i) {
+				// TODO:  You can either have the MutationLogReader throw end_of_stream() when all data is read, OR just
+				// have it return an empty result set.  I'll assume you use the empty result set.
+				if (nextResultSet.empty()) {
+					break;
+				}
+
+				state int i;
+				for (i = 0; i < nextResultSet.size(); ++i) {
 					// Remove the backupLogPrefix + UID bytes from the key
-					wait(logFile.writeKV(r.first[i].key.substr(backupLogPrefixBytes + 16), r.first[i].value));
-					lastVersion = r.second;
+					wait(logFile.writeKV(nextResultSet[i].key.substr(backupLogPrefixBytes + 16),
+					                     nextResultSet[i].value));
 				}
 			}
 		} catch (Error& e) {
@@ -2088,8 +2072,7 @@ struct BackupLogRangeTaskFunc : BackupTaskFuncBase {
 		    .detail("BackupUID", config.getUid())
 		    .detail("Size", outFile->size())
 		    .detail("BeginVersion", beginVersion)
-		    .detail("EndVersion", endVersion)
-		    .detail("LastReadVersion", lastVersion);
+		    .detail("EndVersion", endVersion);
 
 		Params.fileSize().set(task, outFile->size());
 

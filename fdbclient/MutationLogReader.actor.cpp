@@ -44,6 +44,9 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	                                ? CLIENT_KNOBS->BACKUP_SIMULATED_LIMIT_BYTES
 	                                : CLIENT_KNOBS->BACKUP_GET_RANGE_LIMIT_BYTES);
 
+	state uint8_t hash = self->hash;
+	state Key prefix = self->prefix;
+
 	state Future<RangeResultBlock> previousResult = RangeResultBlock{ .result = RangeResult(),
 		                                                              .firstVersion = self->currentBeginVersion,
 		                                                              .lastVersion = self->currentBeginVersion - 1,
@@ -59,27 +62,36 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 				wait(self->t.onTrigger());
 			}
 			RangeResultBlock p = wait(previousResult);
+			if (p.firstVersion == -1) {
+				std::cout << "litian 7 " << (int)hash << std::endl;
+				return Void();
+			}
 
 			KeySelector begin = firstGreaterOrEqual(versionToKeyRef(p.lastVersion + 1, self->prefix)),
 			            end = firstGreaterOrEqual(versionToKeyRef(self->endVersion, self->prefix));
-			previousResult = map(tr.getRange(begin, end, limits), [&](const RangeResult& rangevalue) {
+
+			std::cout << "litian 3 " << (int)hash << " " << begin.toString() << " " << end.toString() << std::endl;
+
+			previousResult = map(tr.getRange(begin, end, limits), [=](const RangeResult& rangevalue) {
+				std::cout << "litian 4 " << (int)p.hash << std::endl;
+
 				if (rangevalue.more) {
-					Version lastVersion = keyRefToVersion(rangevalue.readThrough.get(), self->prefix);
+					std::cout << "litian 4.a " << (int)p.hash << std::endl;
+					Version lastVersion = keyRefToVersion(rangevalue.readThrough.get(), prefix);
+					std::cout << "litian 4.aa " << (int)p.hash << std::endl;
 					return RangeResultBlock{ .result = rangevalue,
 						                     .firstVersion = p.lastVersion + 1,
 						                     .lastVersion = lastVersion,
-						                     .hash = self->hash,
+						                     .hash = p.hash,
 						                     .indexToRead = 0 };
 				} else {
-					self->finished = true;
+					std::cout << "litian 4.b " << (int)p.hash << std::endl;
 					return RangeResultBlock{
-						.result = RangeResult(), .firstVersion = -1, .lastVersion = -1, .hash = self->hash
+						.result = RangeResult(), .firstVersion = -1, .lastVersion = -1, .hash = p.hash,
+						                     .indexToRead = 0
 					};
 				}
 			});
-			if (self->finished) {
-				return Void();
-			}
 			self->reads.push_back(previousResult);
 		} catch (Error& e) {
 			if (e.code() == error_code_transaction_too_old) {
@@ -93,12 +105,22 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	}
 }
 
+// Future<Void> MutationLogReader::initializePQ() {
+// 	return initializePQ_impl(this);
+// }
+
 ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
-	state uint8_t h;
+	state u_int32_t h;
+	std::cout << "litian 1" << std::endl;
 	for (h = 0; h < 256; ++h) {
+		std::cout << "litian 2 " << h << " " << self->pipelinedReaders[h].reads.size() << std::endl;
+		// state Future<RangeResultBlock> fff = self->pipelinedReaders[h].reads.front();
 		RangeResultBlock front = wait(self->pipelinedReaders[h].reads.front());
+		// RangeResultBlock front = wait(fff);
+		std::cout << "litian 2.5 " << (int)front.hash << " " << front.firstVersion << " " << front.lastVersion << " " << front.indexToRead << std::endl;
 		self->priorityQueue.push(front);
 	}
+	std::cout << "litian 6" << std::endl;
 	return Void();
 }
 
@@ -107,6 +129,9 @@ Future<Standalone<RangeResultRef>> MutationLogReader::getNext() {
 }
 
 ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(MutationLogReader* self) {
+	if(self->priorityQueue.empty()) {
+		return Standalone<RangeResultRef>();
+	}
 	RangeResultBlock top = self->priorityQueue.top();
 	self->priorityQueue.pop();
 	uint8_t hash = top.hash;

@@ -77,7 +77,7 @@ public:
 
 	void trigger() { t.trigger(); }
 
-	bool isFinished() { return finished; }
+	// bool isFinished() { return finished; }
 
 	std::deque<Future<RangeResultBlock>> reads;
 	Key prefix; // "\xff\x02/alog/UID/hash/" for restore, or "\xff\x02/blog/UID/hash/" for backup
@@ -86,20 +86,34 @@ private:
 	uint8_t hash;
 	Version beginVersion, endVersion, currentBeginVersion;
 	int pipelineDepth;
-	bool finished = false;
+	// bool finished = false;
 	AsyncTrigger t;
 };
 
-class MutationLogReader {
+class MutationLogReader : public ReferenceCounted<MutationLogReader> {
 public:
+	MutationLogReader()
+	  : finished(true) {
+	}
+
+	// MutationLogReader(Database cx = Database(), Version bv = -1, Version ev = -1, Key uid = Key(), KeyRef beginKey = KeyRef(), int pd = 0)
 	MutationLogReader(Database cx, Version bv, Version ev, Key uid, KeyRef beginKey, int pd)
 	  : beginVersion(bv), endVersion(ev), prefix(uid.withPrefix(beginKey)), pipelineDepth(pd) {
-		for (uint8_t h = 0; h < 256; ++h) {
-			pipelinedReaders.emplace_back(h, beginVersion, endVersion, pipelineDepth, prefix);
+		if (pipelineDepth > 0) {
+		for (uint32_t h = 0; h < 256; ++h) {
+			pipelinedReaders.emplace_back((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix);
 			pipelinedReaders[h].getNext(cx);
 		}
-		wait(initializePQ());
+		}
 	}
+
+	ACTOR static Future<Reference<MutationLogReader>> Create(Database cx, Version bv, Version ev, Key uid, KeyRef beginKey, int pd) {
+		state Reference<MutationLogReader> self(new MutationLogReader(cx, bv, ev, uid, beginKey, pd));
+		wait(self->initializePQ(self.getPtr()));
+		return self;
+	}
+
+	// Future<Void> initializePQ();
 	ACTOR static Future<Void> initializePQ(MutationLogReader* self);
 
 	// Should always call isFinished() before calling getNext.
