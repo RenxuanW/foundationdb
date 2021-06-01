@@ -50,6 +50,8 @@ set(FDBCLIENT_SRCS
   MultiVersionTransaction.actor.cpp
   MultiVersionTransaction.h
   MutationList.h
+  MutationLogReader.actor.cpp
+  MutationLogReader.actor.h
   NativeAPI.actor.cpp
   NativeAPI.actor.h
   Notified.h
