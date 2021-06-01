@@ -74,7 +74,9 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 
 			previousResult = map(tr.getRange(begin, end, limits), [=](const RangeResult& rangevalue) {
 				if (rangevalue.size() != 0) {
-					std::cout << "litian 4 " << (int)p.hash << " " << rangevalue.toString() << std::endl;
+					std::cout << "litian 4 " << (int)hash << " " << rangevalue.toString() << std::endl;
+					// prefix always the prefix of the last PipelinedReader (i.e., \xff). Same thing happens for hash.
+					// Why? If this is something we can't bypass, do we need to store prefix in RangeResultBlock as well?
 					std::cout << "litian 5 prefix: " << prefix.printable() << " first: " << keyRefToVersion(rangevalue.front().key, prefix) << " last: " << keyRefToVersion(rangevalue.back().key, prefix) << std::endl;
 
 					return RangeResultBlock{ .result = rangevalue,
@@ -84,7 +86,7 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 						                     .indexToRead = 0 };
 
 				} else {
-					std::cout << "litian 4.b " << (int)p.hash << std::endl;
+					std::cout << "litian 4.b " << (int)hash << std::endl;
 					return RangeResultBlock{
 						.result = RangeResult(), .firstVersion = -1, .lastVersion = -1, .hash = p.hash,
 						                     .indexToRead = 0
