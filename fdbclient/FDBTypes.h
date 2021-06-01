@@ -702,9 +702,9 @@ struct RangeResultRef : VectorRef<KeyValueRef> {
 	}
 
 	std::string toString() const {
-		return "more:" + std::to_string(more) +
+		return "size: " + std::to_string(size()) + " more:" + std::to_string(more) +
 		       " readThrough:" + (readThrough.present() ? readThrough.get().toString() : "[unset]") +
-		       " readToBegin:" + std::to_string(readToBegin) + " readThroughEnd:" + std::to_string(readThroughEnd);
+		       " readToBegin:" + std::to_string(readToBegin) + " readThroughEnd:" + std::to_string(readThroughEnd) + " first:" + front().key.printable() + " last:" + back().key.printable();
 	}
 };
 using RangeResult = Standalone<RangeResultRef>;

@@ -67,26 +67,22 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 				return Void();
 			}
 
-			// Key wtf1 = versionToKey(p.lastVersion + 1, self->prefix);
-			// Key wtf2 = versionToKey(self->endVersion, self->prefix);
-
 			KeySelector begin = firstGreaterOrEqual(versionToKey(p.lastVersion + 1, self->prefix)),
 			            end = firstGreaterOrEqual(versionToKey(self->endVersion, self->prefix));
 
-			std::cout << "litian 3 " << (int)hash << " " << begin.toString() << " " << end.toString() << std::endl;
+			std::cout << "litian 3 " << (int)hash << " " << p.lastVersion + 1 << " " << self->endVersion << " "<< begin.toString() << " " << end.toString() << std::endl;
 
 			previousResult = map(tr.getRange(begin, end, limits), [=](const RangeResult& rangevalue) {
-				std::cout << "litian 4 " << (int)p.hash << std::endl;
+				if (rangevalue.size() != 0) {
+					std::cout << "litian 4 " << (int)p.hash << " " << rangevalue.toString() << std::endl;
+					std::cout << "litian 5 prefix: " << prefix.printable() << " first: " << keyRefToVersion(rangevalue.front().key, prefix) << " last: " << keyRefToVersion(rangevalue.back().key, prefix) << std::endl;
 
-				if (rangevalue.more) {
-					std::cout << "litian 4.a " << (int)p.hash << std::endl;
-					Version lastVersion = keyRefToVersion(rangevalue.readThrough.get(), prefix);
-					std::cout << "litian 4.aa " << (int)p.hash << std::endl;
 					return RangeResultBlock{ .result = rangevalue,
-						                     .firstVersion = p.lastVersion + 1,
-						                     .lastVersion = lastVersion,
+						                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
+						                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
 						                     .hash = p.hash,
 						                     .indexToRead = 0 };
+
 				} else {
 					std::cout << "litian 4.b " << (int)p.hash << std::endl;
 					return RangeResultBlock{
