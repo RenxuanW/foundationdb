@@ -33,31 +33,38 @@
 #include "flow/ActorCollection.h"
 #include "flow/actorcompiler.h" // has to be last include
 
-Key versionToKey(Version version, const Key& prefix);
-Version keyRefToVersion(const KeyRef& key, const Key& prefix);
+Key versionToKey(Version version, const KeyRef& prefix);
+Version keyRefToVersion(const KeyRef& key, const KeyRef& prefix);
 
 struct RangeResultBlock {
 	RangeResult result;
 	Version firstVersion;
 	Version lastVersion; // not filled in until result.isReady()
 	uint8_t hash; // points back to the PipelinedReader
+	// Key prefix;
 	int indexToRead;
 
-	Standalone<RangeResultRef> consume(const Key& prefix) {
+	Standalone<RangeResultRef> consume(const KeyRef& prefix) {
 		Version stopVersion =
 		    std::min(lastVersion + 1,
-		             (firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) /
+		             (firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
 		                 CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions
+		// std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
 		int startIndex = indexToRead;
 		while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
 			++indexToRead;
 		}
-		firstVersion = keyRefToVersion(result[indexToRead].key, prefix); // the version of result[indexToRead]
+		if (indexToRead < result.size()) {
+			firstVersion = keyRefToVersion(result[indexToRead].key, prefix); // the version of result[indexToRead]
+		}
 		return Standalone<RangeResultRef>(
 		    RangeResultRef(result.slice(startIndex, indexToRead), result.more, result.readThrough), result.arena());
 	}
 
-	bool empty() { return indexToRead == result.size(); }
+	bool empty() {
+		// std::cout << "litian bbb " << indexToRead << " " << result.size() << std::endl;
+		return indexToRead == result.size();
+	}
 
 	bool operator<(const RangeResultBlock& r) const {
 		// We want a min heap. The standard C++ priority queue is a max heap.
@@ -92,22 +99,26 @@ private:
 
 class MutationLogReader : public ReferenceCounted<MutationLogReader> {
 public:
-	MutationLogReader()
-	  : finished(true) {
-	}
+	MutationLogReader() : finished(256) {}
 
-	// MutationLogReader(Database cx = Database(), Version bv = -1, Version ev = -1, Key uid = Key(), KeyRef beginKey = KeyRef(), int pd = 0)
+	// MutationLogReader(Database cx = Database(), Version bv = -1, Version ev = -1, Key uid = Key(), KeyRef beginKey =
+	// KeyRef(), int pd = 0)
 	MutationLogReader(Database cx, Version bv, Version ev, Key uid, KeyRef beginKey, int pd)
 	  : beginVersion(bv), endVersion(ev), prefix(uid.withPrefix(beginKey)), pipelineDepth(pd) {
 		if (pipelineDepth > 0) {
-		for (uint32_t h = 0; h < 256; ++h) {
-			pipelinedReaders.emplace_back((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix);
-			pipelinedReaders[h].getNext(cx);
-		}
+			for (uint32_t h = 0; h < 256; ++h) {
+				pipelinedReaders.emplace_back((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix);
+				pipelinedReaders[h].getNext(cx);
+			}
 		}
 	}
 
-	ACTOR static Future<Reference<MutationLogReader>> Create(Database cx, Version bv, Version ev, Key uid, KeyRef beginKey, int pd) {
+	ACTOR static Future<Reference<MutationLogReader>> Create(Database cx,
+	                                                         Version bv,
+	                                                         Version ev,
+	                                                         Key uid,
+	                                                         KeyRef beginKey,
+	                                                         int pd) {
 		state Reference<MutationLogReader> self(new MutationLogReader(cx, bv, ev, uid, beginKey, pd));
 		wait(self->initializePQ(self.getPtr()));
 		return self;
@@ -120,7 +131,9 @@ public:
 	Future<Standalone<RangeResultRef>> getNext();
 	ACTOR Future<Standalone<RangeResultRef>> getNext_impl(MutationLogReader* self);
 
-	bool isFinished() { return finished; }
+	bool isFinished() { return finished == 256; }
+
+	int pqSize() { return priorityQueue.size(); }
 
 private:
 	std::vector<PipelinedReader> pipelinedReaders;
@@ -128,7 +141,7 @@ private:
 	Version beginVersion, endVersion;
 	Key prefix; // "\xff\x02/alog/UID/" for restore, or "\xff\x02/blog/UID/" for backup
 	int pipelineDepth;
-	bool finished = false;
+	int finished = 0;
 };
 
 #include "flow/unactorcompiler.h"

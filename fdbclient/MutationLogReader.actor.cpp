@@ -22,12 +22,12 @@
 #include "fdbrpc/simulator.h"
 #include "flow/UnitTest.h"
 
-Key versionToKey(Version version, const Key& prefix) {
+Key versionToKey(Version version, const KeyRef& prefix) {
 	uint64_t versionBigEndian = bigEndian64(version);
 	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
 }
 
-Version keyRefToVersion(const KeyRef& key, const Key& prefix) {
+Version keyRefToVersion(const KeyRef& key, const KeyRef& prefix) {
 	KeyRef keyWithoutPrefix = key.removePrefix(prefix);
 	return (Version)bigEndian64(*((uint64_t*)keyWithoutPrefix.begin()));
 }
@@ -44,13 +44,11 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	                                ? CLIENT_KNOBS->BACKUP_SIMULATED_LIMIT_BYTES
 	                                : CLIENT_KNOBS->BACKUP_GET_RANGE_LIMIT_BYTES);
 
-	state uint8_t hash = self->hash;
-	state Key prefix = self->prefix;
-
 	state Future<RangeResultBlock> previousResult = RangeResultBlock{ .result = RangeResult(),
 		                                                              .firstVersion = self->currentBeginVersion,
 		                                                              .lastVersion = self->currentBeginVersion - 1,
 		                                                              .hash = self->hash,
+		                                                              // .prefix = self->prefix,
 		                                                              .indexToRead = 0 };
 
 	loop {
@@ -62,33 +60,36 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 				wait(self->t.onTrigger());
 			}
 			RangeResultBlock p = wait(previousResult);
+
+			uint8_t hash = self->hash;
+			Key prefix = self->prefix;
+			std::cout << "litian 7 " << (int)hash << " " << p.firstVersion << std::endl;
 			if (p.firstVersion == -1) {
-				std::cout << "litian 7 " << (int)hash << std::endl;
 				return Void();
 			}
 
 			KeySelector begin = firstGreaterOrEqual(versionToKey(p.lastVersion + 1, self->prefix)),
 			            end = firstGreaterOrEqual(versionToKey(self->endVersion, self->prefix));
 
-			std::cout << "litian 3 " << (int)hash << " " << p.lastVersion + 1 << " " << self->endVersion << " "<< begin.toString() << " " << end.toString() << std::endl;
-
+			// std::cout << "litian 3 " << (int)self->hash << " " << p.lastVersion + 1 << " " << self->endVersion << " " << begin.toString() << " " << end.toString() << std::endl;
 			previousResult = map(tr.getRange(begin, end, limits), [=](const RangeResult& rangevalue) {
 				if (rangevalue.size() != 0) {
-					std::cout << "litian 4 " << (int)p.hash << " " << rangevalue.toString() << std::endl;
-					std::cout << "litian 5 prefix: " << prefix.printable() << " first: " << keyRefToVersion(rangevalue.front().key, prefix) << " last: " << keyRefToVersion(rangevalue.back().key, prefix) << std::endl;
-
+					std::cout << "litian 4 " << (int)hash << " " << prefix.printable() << " " << rangevalue.toString() << std::endl;
 					return RangeResultBlock{ .result = rangevalue,
 						                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
 						                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
-						                     .hash = p.hash,
+						                     .hash = hash,
+						                     // .prefix = p.prefix,
 						                     .indexToRead = 0 };
 
 				} else {
-					std::cout << "litian 4.b " << (int)p.hash << std::endl;
-					return RangeResultBlock{
-						.result = RangeResult(), .firstVersion = -1, .lastVersion = -1, .hash = p.hash,
-						                     .indexToRead = 0
-					};
+					std::cout << "litian 5 " << (int)hash << " " << prefix.printable() << " "  << std::endl;
+					return RangeResultBlock{ .result = RangeResult(),
+						                     .firstVersion = -1,
+						                     .lastVersion = -1,
+						                     .hash = hash,
+						                     // .prefix = p.prefix,
+						                     .indexToRead = 0 };
 				}
 			});
 			self->reads.push_back(previousResult);
@@ -104,22 +105,16 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	}
 }
 
-// Future<Void> MutationLogReader::initializePQ() {
-// 	return initializePQ_impl(this);
-// }
-
 ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
-	state u_int32_t h;
-	std::cout << "litian 1" << std::endl;
+	state uint32_t h;
+	// std::cout << "litian 1" << std::endl;
 	for (h = 0; h < 256; ++h) {
-		std::cout << "litian 2 " << h << " " << self->pipelinedReaders[h].reads.size() << std::endl;
-		// state Future<RangeResultBlock> fff = self->pipelinedReaders[h].reads.front();
+		// std::cout << "litian 2 " << h << " " << self->pipelinedReaders[h].reads.size() << std::endl;
 		RangeResultBlock front = wait(self->pipelinedReaders[h].reads.front());
-		// RangeResultBlock front = wait(fff);
-		std::cout << "litian 2.5 " << (int)front.hash << " " << front.firstVersion << " " << front.lastVersion << " " << front.indexToRead << std::endl;
+		// std::cout << "litian 2.5 " << (int)front.hash << " " << front.firstVersion << " " << front.lastVersion << " "
+		// << front.indexToRead << std::endl;
 		self->priorityQueue.push(front);
 	}
-	std::cout << "litian 6" << std::endl;
 	return Void();
 }
 
@@ -128,20 +123,25 @@ Future<Standalone<RangeResultRef>> MutationLogReader::getNext() {
 }
 
 ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(MutationLogReader* self) {
-	if(self->priorityQueue.empty()) {
+	if (self->priorityQueue.empty()) {
 		return Standalone<RangeResultRef>();
 	}
 	RangeResultBlock top = self->priorityQueue.top();
 	self->priorityQueue.pop();
 	uint8_t hash = top.hash;
-	Key prefix = self->pipelinedReaders[hash].prefix;
+	Key prefix = self->pipelinedReaders[(uint32_t)hash].prefix;
+
 	state Standalone<RangeResultRef> ret = top.consume(prefix);
+
+	// std::cout << "litian aaa " << ret.size() << std::endl;
 	if (top.empty()) {
-		self->pipelinedReaders[hash].reads.pop_front();
-		self->pipelinedReaders[hash].trigger();
-		if (!self->pipelinedReaders[hash].reads.empty()) {
-			RangeResultBlock next = wait(self->pipelinedReaders[hash].reads.front());
+		self->pipelinedReaders[(uint32_t)hash].reads.pop_front();
+		self->pipelinedReaders[(uint32_t)hash].trigger();
+		if (!self->pipelinedReaders[(uint32_t)hash].reads.empty()) {
+			RangeResultBlock next = wait(self->pipelinedReaders[(uint32_t)hash].reads.front());
 			self->priorityQueue.push(next);
+		} else {
+			++self->finished;
 		}
 	} else {
 		self->priorityQueue.push(top);

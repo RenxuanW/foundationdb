@@ -2029,19 +2029,23 @@ struct BackupLogRangeTaskFunc : BackupTaskFuncBase {
 		// Start the parallel read/merge
 		state Reference<MutationLogReader> reader = wait(MutationLogReader::Create(
 		    cx, beginVersion, endVersion, destUidValue, backupLogKeys.begin, /*pipelineDepth=*/3));
-		// wait(success(reader.initializePQ()));
 
-		std::cout << "litian ooo" << std::endl;
+		// std::cout << "litian iii" << std::endl;
 
 		try {
 			loop {
+				// std::cout << "litian ooo" << std::endl;
+				if (reader->isFinished()) {
+					break;
+				}
+
 				state Standalone<RangeResultRef> nextResultSet =
 				    wait(reader->getNext()); // or whatever the function is called
 
 				// TODO:  You can either have the MutationLogReader throw end_of_stream() when all data is read, OR just
 				// have it return an empty result set.  I'll assume you use the empty result set.
 				if (nextResultSet.empty()) {
-					break;
+					continue;
 				}
 
 				state int i;
