@@ -63,6 +63,9 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 
 			uint8_t hash = self->hash;
 			Key prefix = self->prefix;
+			// Question:
+			// It's so weird that `p.firstVersion` is never -1. Line 89 is printed, which means we definitely did put a
+			// RangeResultBlock whose firstVersion is -1 into the deque.
 			std::cout << "litian 7 " << (int)hash << " " << p.firstVersion << std::endl;
 			if (p.firstVersion == -1) {
 				return Void();
@@ -94,6 +97,10 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			});
 			self->reads.push_back(previousResult);
 		} catch (Error& e) {
+			// The whole loop is only executed once for every getNext() call. Also, e.code() = 1101 below, which is "Asynchronous operation cancelled". 
+			// Does this provide some clue?
+			std::cout << "litian 6 " << (int)self->hash << " " << e.code() << std::endl;
+
 			if (e.code() == error_code_transaction_too_old) {
 				// We are using this transaction until it's too old and then resetting to a fresh one,
 				// so we don't need to delay.
@@ -107,7 +114,6 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 
 ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
 	state uint32_t h;
-	// std::cout << "litian 1" << std::endl;
 	for (h = 0; h < 256; ++h) {
 		// std::cout << "litian 2 " << h << " " << self->pipelinedReaders[h].reads.size() << std::endl;
 		RangeResultBlock front = wait(self->pipelinedReaders[h].reads.front());
