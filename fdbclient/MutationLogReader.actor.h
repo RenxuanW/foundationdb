@@ -49,7 +49,7 @@ struct RangeResultBlock {
 		    std::min(lastVersion + 1,
 		             (firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
 		                 CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions
-		// std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
+		std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
 		int startIndex = indexToRead;
 		while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
 			++indexToRead;
@@ -62,7 +62,7 @@ struct RangeResultBlock {
 	}
 
 	bool empty() {
-		// std::cout << "litian bbb " << indexToRead << " " << result.size() << std::endl;
+		std::cout << "litian bbb " << indexToRead << " " << result.size() << std::endl;
 		return indexToRead == result.size();
 	}
 
@@ -79,6 +79,7 @@ public:
 		prefix = StringRef(&hash, sizeof(uint8_t)).withPrefix(p);
 	}
 
+	void startReading(Database cx);
 	Future<Void> getNext(Database cx);
 	ACTOR static Future<Void> getNext_impl(PipelinedReader* self, Database cx);
 
@@ -95,6 +96,7 @@ private:
 	int pipelineDepth;
 	// bool finished = false;
 	AsyncTrigger t;
+	Future<Void> reader;
 };
 
 class MutationLogReader : public ReferenceCounted<MutationLogReader> {
@@ -108,7 +110,7 @@ public:
 		if (pipelineDepth > 0) {
 			for (uint32_t h = 0; h < 256; ++h) {
 				pipelinedReaders.emplace_back((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix);
-				pipelinedReaders[h].getNext(cx);
+				pipelinedReaders[h].startReading(cx);
 			}
 		}
 	}

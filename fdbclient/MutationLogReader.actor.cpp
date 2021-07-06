@@ -32,6 +32,10 @@ Version keyRefToVersion(const KeyRef& key, const KeyRef& prefix) {
 	return (Version)bigEndian64(*((uint64_t*)keyWithoutPrefix.begin()));
 }
 
+void PipelinedReader::startReading(Database cx) {
+	reader = getNext(cx);
+}
+
 Future<Void> PipelinedReader::getNext(Database cx) {
 	return getNext_impl(this, cx);
 }
@@ -59,20 +63,19 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			if (self->reads.size() > self->pipelineDepth) {
 				wait(self->t.onTrigger());
 			}
+
+			std::cout << "litian 1 " << (int)self->hash << std::endl;
 			RangeResultBlock p = wait(previousResult);
 
 			uint8_t hash = self->hash;
 			Key prefix = self->prefix;
-			// Question:
-			// It's so weird that `p.firstVersion` is never -1. Line 89 is printed, which means we definitely did put a
-			// RangeResultBlock whose firstVersion is -1 into the deque.
 			std::cout << "litian 7 " << (int)hash << " " << p.firstVersion << std::endl;
 			if (p.firstVersion == -1) {
 				return Void();
 			}
 
-			KeySelector begin = firstGreaterOrEqual(versionToKey(p.lastVersion + 1, self->prefix)),
-			            end = firstGreaterOrEqual(versionToKey(self->endVersion, self->prefix));
+			KeySelector begin = firstGreaterOrEqual(versionToKey(p.lastVersion + 1, prefix)),
+			            end = firstGreaterOrEqual(versionToKey(self->endVersion, prefix));
 
 			// std::cout << "litian 3 " << (int)self->hash << " " << p.lastVersion + 1 << " " << self->endVersion << " " << begin.toString() << " " << end.toString() << std::endl;
 			previousResult = map(tr.getRange(begin, end, limits), [=](const RangeResult& rangevalue) {
