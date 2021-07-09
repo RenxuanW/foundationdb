@@ -33,7 +33,7 @@
 #include "flow/ActorCollection.h"
 #include "flow/actorcompiler.h" // has to be last include
 
-Key versionToKey(Version version, const KeyRef& prefix);
+KeyRef versionToKey(Version version, const KeyRef& prefix);
 Version keyRefToVersion(const KeyRef& key, const KeyRef& prefix);
 
 struct RangeResultBlock {
@@ -74,14 +74,14 @@ struct RangeResultBlock {
 
 class PipelinedReader {
 public:
-	PipelinedReader(uint8_t h, Version bv, Version ev, int pd, Key p)
+	PipelinedReader(uint8_t h, Version bv, Version ev, int pd, KeyRef p)
 	  : hash(h), beginVersion(bv), endVersion(ev), currentBeginVersion(bv), pipelineDepth(pd) {
 		prefix = StringRef(&hash, sizeof(uint8_t)).withPrefix(p);
 	}
 
 	void startReading(Database cx);
 	Future<Void> getNext(Database cx);
-	ACTOR static Future<Void> getNext_impl(PipelinedReader* self, Database cx);
+	ACTOR Future<Void> getNext_impl(PipelinedReader* self, Database cx);
 
 	void trigger() { t.trigger(); }
 
@@ -108,7 +108,7 @@ public:
 	MutationLogReader(Database cx, Version bv, Version ev, Key uid, KeyRef beginKey, int pd)
 	  : beginVersion(bv), endVersion(ev), prefix(uid.withPrefix(beginKey)), pipelineDepth(pd) {
 		if (pipelineDepth > 0) {
-			for (uint32_t h = 0; h < 256; ++h) {
+			for (int h = 0; h < 256; ++h) {
 				pipelinedReaders.emplace_back((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix);
 				pipelinedReaders[h].startReading(cx);
 			}
@@ -127,7 +127,7 @@ public:
 	}
 
 	// Future<Void> initializePQ();
-	ACTOR static Future<Void> initializePQ(MutationLogReader* self);
+	ACTOR Future<Void> initializePQ(MutationLogReader* self);
 
 	// Should always call isFinished() before calling getNext.
 	Future<Standalone<RangeResultRef>> getNext();

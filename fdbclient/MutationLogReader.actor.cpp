@@ -22,7 +22,7 @@
 #include "fdbrpc/simulator.h"
 #include "flow/UnitTest.h"
 
-Key versionToKey(Version version, const KeyRef& prefix) {
+KeyRef versionToKey(Version version, const KeyRef& prefix) {
 	uint64_t versionBigEndian = bigEndian64(version);
 	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
 }
@@ -54,6 +54,8 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 		                                                              .hash = self->hash,
 		                                                              // .prefix = self->prefix,
 		                                                              .indexToRead = 0 };
+	state uint8_t hash = self->hash;
+	state KeyRef prefix = self->prefix;
 
 	loop {
 		try {
@@ -64,12 +66,10 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 				wait(self->t.onTrigger());
 			}
 
-			std::cout << "litian 1 " << (int)self->hash << std::endl;
+			std::cout << "litian 1 " << (int)hash << " " << self << std::endl;
 			RangeResultBlock p = wait(previousResult);
 
-			uint8_t hash = self->hash;
-			Key prefix = self->prefix;
-			std::cout << "litian 7 " << (int)hash << " " << p.firstVersion << std::endl;
+			std::cout << "litian 7 " << (int)hash << " " << p.firstVersion << " " << prefix.printable() << " " << self << std::endl;
 			if (p.firstVersion == -1) {
 				return Void();
 			}
@@ -116,7 +116,7 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 }
 
 ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
-	state uint32_t h;
+	state int h;
 	for (h = 0; h < 256; ++h) {
 		// std::cout << "litian 2 " << h << " " << self->pipelinedReaders[h].reads.size() << std::endl;
 		RangeResultBlock front = wait(self->pipelinedReaders[h].reads.front());
@@ -138,16 +138,16 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 	RangeResultBlock top = self->priorityQueue.top();
 	self->priorityQueue.pop();
 	uint8_t hash = top.hash;
-	Key prefix = self->pipelinedReaders[(uint32_t)hash].prefix;
+	KeyRef prefix = self->pipelinedReaders[(int)hash].prefix;
 
 	state Standalone<RangeResultRef> ret = top.consume(prefix);
 
-	// std::cout << "litian aaa " << ret.size() << std::endl;
+	std::cout << "litian aaa " << (int)hash << " " << ret.size() << std::endl;
 	if (top.empty()) {
-		self->pipelinedReaders[(uint32_t)hash].reads.pop_front();
-		self->pipelinedReaders[(uint32_t)hash].trigger();
-		if (!self->pipelinedReaders[(uint32_t)hash].reads.empty()) {
-			RangeResultBlock next = wait(self->pipelinedReaders[(uint32_t)hash].reads.front());
+		self->pipelinedReaders[(int)hash].reads.pop_front();
+		self->pipelinedReaders[(int)hash].trigger();
+		if (!self->pipelinedReaders[(int)hash].reads.empty()) {
+			RangeResultBlock next = wait(self->pipelinedReaders[(int)hash].reads.front());
 			self->priorityQueue.push(next);
 		} else {
 			++self->finished;
