@@ -22,13 +22,13 @@
 #include "fdbrpc/simulator.h"
 #include "flow/UnitTest.h"
 
-KeyRef versionToKey(Version version, const KeyRef& prefix) {
+Key versionToKey(Version version, Key prefix) {
 	uint64_t versionBigEndian = bigEndian64(version);
 	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
 }
 
-Version keyRefToVersion(const KeyRef& key, const KeyRef& prefix) {
-	KeyRef keyWithoutPrefix = key.removePrefix(prefix);
+Version keyRefToVersion(Key key, Key prefix) {
+	Key keyWithoutPrefix = key.removePrefix(prefix);
 	return (Version)bigEndian64(*((uint64_t*)keyWithoutPrefix.begin()));
 }
 
@@ -55,7 +55,7 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 		                                                              // .prefix = self->prefix,
 		                                                              .indexToRead = 0 };
 	state uint8_t hash = self->hash;
-	state KeyRef prefix = self->prefix;
+	state Key prefix = self->prefix;
 
 	loop {
 		try {
@@ -63,24 +63,27 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 
 			if (self->reads.size() > self->pipelineDepth) {
+				std::cout << "litian 1 " << (int)hash << " " << std::endl;
 				wait(self->t.onTrigger());
 			}
 
-			std::cout << "litian 1 " << (int)hash << " " << self << std::endl;
 			RangeResultBlock p = wait(previousResult);
 
-			std::cout << "litian 7 " << (int)hash << " " << p.firstVersion << " " << prefix.printable() << " " << self << std::endl;
+			// std::cout << "litian 7 " << (int)hash << " " << (int)self->hash << " " << p.firstVersion << " " << self->endVersion << " " << prefix.printable() << std::endl;
 			if (p.firstVersion == -1) {
 				return Void();
 			}
 
-			KeySelector begin = firstGreaterOrEqual(versionToKey(p.lastVersion + 1, prefix)),
-			            end = firstGreaterOrEqual(versionToKey(self->endVersion, prefix));
+			Key beginKey = versionToKey(p.lastVersion + 1, prefix), endKey = versionToKey(self->endVersion, prefix);
 
-			// std::cout << "litian 3 " << (int)self->hash << " " << p.lastVersion + 1 << " " << self->endVersion << " " << begin.toString() << " " << end.toString() << std::endl;
-			previousResult = map(tr.getRange(begin, end, limits), [=](const RangeResult& rangevalue) {
+			// std::cout << "litian 8 " << (int)hash << " " << (int)self->hash << " " << p.firstVersion << " " << self->endVersion << " " << prefix.printable() << std::endl;
+
+			KeySelectorRef begin = firstGreaterOrEqual(beginKey), end = firstGreaterOrEqual(endKey);			
+			// std::cout << "litian 9 " << (int)hash << " " << (int)self->hash << " " << p.lastVersion + 1 << " " << self->endVersion << " " << beginKey.printable() << " " << endKey.printable() << " " << begin.toString() << " " << end.toString() << std::endl;
+
+			previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
 				if (rangevalue.size() != 0) {
-					std::cout << "litian 4 " << (int)hash << " " << prefix.printable() << " " << rangevalue.toString() << std::endl;
+					std::cout << "litian 4 " << (int)hash << " " << rangevalue.size() << std::endl;
 					return RangeResultBlock{ .result = rangevalue,
 						                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
 						                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
@@ -89,7 +92,7 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 						                     .indexToRead = 0 };
 
 				} else {
-					std::cout << "litian 5 " << (int)hash << " " << prefix.printable() << " "  << std::endl;
+					// std::cout << "litian 5 " << (int)hash << " " << prefix.printable() << " "  << std::endl;
 					return RangeResultBlock{ .result = RangeResult(),
 						                     .firstVersion = -1,
 						                     .lastVersion = -1,
@@ -138,7 +141,7 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 	RangeResultBlock top = self->priorityQueue.top();
 	self->priorityQueue.pop();
 	uint8_t hash = top.hash;
-	KeyRef prefix = self->pipelinedReaders[(int)hash].prefix;
+	Key prefix = self->pipelinedReaders[(int)hash].prefix;
 
 	state Standalone<RangeResultRef> ret = top.consume(prefix);
 

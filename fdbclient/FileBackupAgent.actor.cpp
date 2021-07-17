@@ -2027,6 +2027,8 @@ struct BackupLogRangeTaskFunc : BackupTaskFuncBase {
 		state LogFileWriter logFile(outFile, blockSize);
 
 		// Start the parallel read/merge
+		std::cout << "litian iii " << destUidValue.printable() << std::endl;
+
 		state Reference<MutationLogReader> reader = wait(MutationLogReader::Create(
 		    cx, beginVersion, endVersion, destUidValue, backupLogKeys.begin, /*pipelineDepth=*/3));
 

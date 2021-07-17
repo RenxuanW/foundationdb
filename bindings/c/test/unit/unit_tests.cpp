@@ -860,6 +860,57 @@ TEST_CASE("fdb_transaction_get_range reverse") {
 	}
 }
 
+// TEST_CASE("fdb_transaction_get_range mutation log reader") {
+// 	std::map<std::string, std::string> data;
+// 	int k = 3;
+// 	Key uid = StringRef("uid");
+
+// 	Version beginVersion = k, endVersion = k * 1000000;
+// 	Key baLogRangePrefix = uid.withPrefix(backupLogKeys.begin);
+// 	for (int i = 1; i <= 1000000; ++i) {
+// 		Version v = k * i;
+
+// 		uint32_t data = v & 0xffffffff;
+// 		uint8_t hash = (uint8_t)hashlittle(&data, sizeof(uint32_t), 0);
+
+// 		Key prefix = StringRef(&hash, sizeof(uint8_t)).withPrefix(baLogRangePrefix);
+// 		Key key = StringRef((uint8_t*)&v, sizeof(uint64_t)).withPrefix(prefix);
+
+// 		data[key.printable()] = std::to_string(v);
+// 	}
+// 	data = std::move(create_data(data));
+// 	insert_data(db, data);
+
+// 	// Start the parallel read/merge
+// 	state Reference<MutationLogReader> reader = wait(MutationLogReader::Create(
+// 		db, beginVersion, endVersion, uid, backupLogKeys.begin, /*pipelineDepth=*/3));
+
+// 	state int globalSize = 0;
+
+// 	while(1) {
+// 		// std::cout << "litian ooo" << std::endl;
+// 		if (reader->isFinished()) {
+// 			break;
+// 		}
+
+// 		state Standalone<RangeResultRef> nextResultSet =
+// 			wait(reader->getNext());
+
+// 		if (nextResultSet.empty()) {
+// 			continue;
+// 		}
+
+// 		state int i;
+// 		for (i = 0; i < nextResultSet.size(); ++i) {
+// 			++globalSize;
+// 			// Remove the backupLogPrefix + UID bytes from the key
+// 			Key k = nextResultSet[i].key, v = nextResultSet[i].value;
+// 			CHECK(k.substr(backupLogPrefixBytes + 16).compare(v) == 0)
+// 		}
+// 	}
+// 	CHECK(globalSize == 1000000);
+// }
+
 TEST_CASE("fdb_transaction_get_range limit") {
 	std::map<std::string, std::string> data = create_data({ { "a", "1" }, { "b", "2" }, { "c", "3" }, { "d", "4" } });
 	insert_data(db, data);
