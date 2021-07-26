@@ -45,6 +45,8 @@ ACTOR Future<RangeResultBlock> getRange(Transaction* tr, PipelinedReader* self, 
 	tr->setOption(FDBTransactionOptions::LOCK_AWARE);
 	std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
 	RangeResult rangevalue = wait(tr->getRange(begin, end, limits));
+	// However, in line 46 and 50, `begin` and `end` are the same, which means tr->getRange() doesn't pollute them.
+	// Then how is that possiblt that `self->hash` is suddenly changed at line 50, and self->prefix.printable() even causes a seg fault???
 	std::cout << "litian 5 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
 	if (rangevalue.size() != 0) {
 		// std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << self->prefix.printable() << " " << rangevalue.size() << std::endl;
@@ -100,6 +102,15 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			Key beginKey = versionToKey(p.lastVersion + 1, prefix), endKey = versionToKey(endVersion, prefix);
 			KeySelector begin = firstGreaterOrEqual(beginKey), end = firstGreaterOrEqual(endKey);
 
+			// At first I thought it could be the lambda doing capture that pollutes the memory of `self`,
+			// so I change the lambda to an ACTOR function getRange, but the behavior didn't change at all.
+			// The problem doesn't exist when I assign a trivial RangeResultBlock to previousResult as below,
+			// so it's obvious that the bug exists in `getRange()`.
+			// previousResult = RangeResultBlock{ .result = RangeResult(),
+			// 									.firstVersion = -1,
+			// 									.lastVersion = -1,
+			// 									.hash = hash,
+			// 									.indexToRead = 0 };
 			previousResult = getRange(&tr, self, hash, prefix, begin, end, limits);
 
 			// previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
