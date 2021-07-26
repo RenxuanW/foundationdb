@@ -49,7 +49,7 @@ struct RangeResultBlock {
 		    std::min(lastVersion + 1,
 		             (firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
 		                 CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions
-		// std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
+		std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
 		int startIndex = indexToRead;
 		while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
 			++indexToRead;
@@ -75,8 +75,14 @@ struct RangeResultBlock {
 class PipelinedReader {
 public:
 	PipelinedReader(uint8_t h, Version bv, Version ev, int pd, Key p)
-	  : hash(h), beginVersion(bv), endVersion(ev), currentBeginVersion(bv), pipelineDepth(pd), prefix(StringRef(&h, sizeof(uint8_t)).withPrefix(p)) {
-	}
+	  : hash(h), beginVersion(bv), endVersion(ev), currentBeginVersion(bv), pipelineDepth(pd), prefix(StringRef(&hash, sizeof(uint8_t)).withPrefix(p)) {}
+    // {
+	//     hash = h;
+	// 	beginVersion = currentBeginVersion = bv;
+	// 	endVersion = ev;
+	// 	pipelineDepth = pd;
+	// 	prefix = StringRef(&h, sizeof(uint8_t)).withPrefix(p);
+	// }
 
 	void startReading(Database cx);
 	Future<Void> getNext(Database cx);
@@ -87,10 +93,10 @@ public:
 	// bool isFinished() { return finished; }
 
 	std::deque<Future<RangeResultBlock>> reads;
+	uint8_t hash;
 	Key prefix; // "\xff\x02/alog/UID/hash/" for restore, or "\xff\x02/blog/UID/hash/" for backup
 
 private:
-	uint8_t hash;
 	Version beginVersion, endVersion, currentBeginVersion;
 	int pipelineDepth;
 	// bool finished = false;
