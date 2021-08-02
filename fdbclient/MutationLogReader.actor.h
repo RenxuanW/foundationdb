@@ -33,9 +33,6 @@
 #include "flow/ActorCollection.h"
 #include "flow/actorcompiler.h" // has to be last include
 
-Key versionToKey(Version version, Key prefix);
-Version keyRefToVersion(Key key, Key prefix);
-
 struct RangeResultBlock {
 	RangeResult result;
 	Version firstVersion;
@@ -44,22 +41,7 @@ struct RangeResultBlock {
 	// Key prefix;
 	int indexToRead;
 
-	Standalone<RangeResultRef> consume(Key prefix) {
-		Version stopVersion =
-		    std::min(lastVersion + 1,
-		             (firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
-		                 CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions
-		std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
-		int startIndex = indexToRead;
-		while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
-			++indexToRead;
-		}
-		if (indexToRead < result.size()) {
-			firstVersion = keyRefToVersion(result[indexToRead].key, prefix); // the version of result[indexToRead]
-		}
-		return Standalone<RangeResultRef>(
-		    RangeResultRef(result.slice(startIndex, indexToRead), result.more, result.readThrough), result.arena());
-	}
+	Standalone<RangeResultRef> consume(Key prefix);
 
 	bool empty() {
 		// std::cout << "litian bbb " << indexToRead << " " << result.size() << std::endl;
@@ -75,7 +57,7 @@ struct RangeResultBlock {
 class PipelinedReader {
 public:
 	PipelinedReader(uint8_t h, Version bv, Version ev, int pd, Key p)
-	  : hash(h), beginVersion(bv), endVersion(ev), currentBeginVersion(bv), pipelineDepth(pd), prefix(StringRef(&hash, sizeof(uint8_t)).withPrefix(p)) {}
+	  : hash(h), prefix(StringRef(&hash, sizeof(uint8_t)).withPrefix(p)), beginVersion(bv), endVersion(ev), currentBeginVersion(bv), pipelineDepth(pd) {}
     // {
 	//     hash = h;
 	// 	beginVersion = currentBeginVersion = bv;
@@ -84,9 +66,13 @@ public:
 	// 	prefix = StringRef(&h, sizeof(uint8_t)).withPrefix(p);
 	// }
 
+	// ~PipelinedReader() {
+	// 	printf("~PipelinedReader(this=%s\n)", toString().c_str());
+	// }
+
 	void startReading(Database cx);
 	Future<Void> getNext(Database cx);
-	ACTOR Future<Void> getNext_impl(PipelinedReader* self, Database cx);
+	ACTOR static Future<Void> getNext_impl(PipelinedReader* self, Database cx);
 
 	void trigger() { t.trigger(); }
 
@@ -95,6 +81,10 @@ public:
 	std::deque<Future<RangeResultBlock>> reads;
 	uint8_t hash;
 	Key prefix; // "\xff\x02/alog/UID/hash/" for restore, or "\xff\x02/blog/UID/hash/" for backup
+
+	std::string toString() const {
+		return format("{ PipelinedReader hash=%u (%x) }", hash, hash);
+	}
 
 private:
 	Version beginVersion, endVersion, currentBeginVersion;
@@ -111,7 +101,8 @@ public:
 	// MutationLogReader(Database cx = Database(), Version bv = -1, Version ev = -1, Key uid = Key(), KeyRef beginKey =
 	// KeyRef(), int pd = 0)
 	MutationLogReader(Database cx, Version bv, Version ev, Key uid, Key beginKey, int pd)
-	  : beginVersion(bv), endVersion(ev), prefix(uid.withPrefix(beginKey)), pipelineDepth(pd) {
+	  : beginVersion(bv), endVersion(ev), prefix(uid.withPrefix(beginKey)), pipelineDepth(pd), finished(0) {
+
 		pipelinedReaders.reserve(256);
 		if (pipelineDepth > 0) {
 			for (int h = 0; h < 256; ++h) {
@@ -133,11 +124,11 @@ public:
 	}
 
 	// Future<Void> initializePQ();
-	ACTOR Future<Void> initializePQ(MutationLogReader* self);
+	ACTOR static Future<Void> initializePQ(MutationLogReader* self);
 
 	// Should always call isFinished() before calling getNext.
 	Future<Standalone<RangeResultRef>> getNext();
-	ACTOR Future<Standalone<RangeResultRef>> getNext_impl(MutationLogReader* self);
+	ACTOR static Future<Standalone<RangeResultRef>> getNext_impl(MutationLogReader* self);
 
 	bool isFinished() { return finished == 256; }
 
@@ -149,7 +140,7 @@ private:
 	Version beginVersion, endVersion;
 	Key prefix; // "\xff\x02/alog/UID/" for restore, or "\xff\x02/blog/UID/" for backup
 	int pipelineDepth;
-	int finished = 0;
+	int finished;
 };
 
 #include "flow/unactorcompiler.h"

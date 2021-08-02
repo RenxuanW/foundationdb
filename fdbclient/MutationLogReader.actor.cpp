@@ -21,6 +21,8 @@
 #include "fdbclient/MutationLogReader.actor.h"
 #include "fdbrpc/simulator.h"
 #include "flow/UnitTest.h"
+#include "flow/flow.h"
+#include "flow/actorcompiler.h" // This must be the last #include.
 
 Key versionToKey(Version version, Key prefix) {
 	uint64_t versionBigEndian = bigEndian64(version);
@@ -30,6 +32,23 @@ Key versionToKey(Version version, Key prefix) {
 Version keyRefToVersion(Key key, Key prefix) {
 	Key keyWithoutPrefix = key.removePrefix(prefix);
 	return (Version)bigEndian64(*((uint64_t*)keyWithoutPrefix.begin()));
+}
+
+Standalone<RangeResultRef> RangeResultBlock::consume(Key prefix) {
+	Version stopVersion =
+		std::min(lastVersion + 1,
+					(firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
+						CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions
+	std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
+	int startIndex = indexToRead;
+	while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
+		++indexToRead;
+	}
+	if (indexToRead < result.size()) {
+		firstVersion = keyRefToVersion(result[indexToRead].key, prefix); // the version of result[indexToRead]
+	}
+	return Standalone<RangeResultRef>(
+		RangeResultRef(result.slice(startIndex, indexToRead), result.more, result.readThrough), result.arena());
 }
 
 void PipelinedReader::startReading(Database cx) {

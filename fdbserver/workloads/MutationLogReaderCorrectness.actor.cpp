@@ -18,29 +18,52 @@
  * limitations under the License.
  */
 
+#include <cstdint>
 #include "fdbrpc/simulator.h"
 #include "fdbclient/BackupAgent.actor.h"
 #include "fdbclient/BackupContainer.h"
 #include "fdbclient/MutationLogReader.actor.h"
 #include "fdbserver/workloads/workloads.actor.h"
+#include "flow/Error.h"
 #include "flow/flow.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
 
 struct MutationLogReaderCorrectnessWorkload : TestWorkload {
     bool enabled;
-	int records = 100000;
-	int k;
+	int records;
+	Version versionRange;
+	Version versionIncrement;
+	Version beginVersion;
+	Version endVersion;
 	Key uid;
 	Key baLogRangePrefix;
-	Version beginVersion, endVersion;
+	bool debug = true;
+
+	Version recordVersion(int index) {
+		return beginVersion + versionIncrement * index;
+	}
+
+	Key recordKey(int index) {
+		return getLogKey(recordVersion(index), uid);
+	}
+
+	Value recordValue(int index) {
+		Version v = recordVersion(index);
+		return StringRef(format("%" PRId64 " (%" PRIx64 ")", v, v));
+	}
 
 	MutationLogReaderCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
         enabled = !clientId; // only do this on the "first" client
-		k = deterministicRandom()->randomInt(1, 100);
 		uid = BinaryWriter::toValue(deterministicRandom()->randomUniqueID(), Unversioned()); // StringRef(std::string("uid"));
-		beginVersion = k;
-		endVersion = k * records + 1;
 		baLogRangePrefix = uid.withPrefix(backupLogKeys.begin);
+
+		records = 100;
+		versionRange = 20e6;
+		versionIncrement = versionRange / records;
+		beginVersion = 0;
+
+		// The version immediately after the last actual record version
+		endVersion = recordVersion(records - 1) + 1;
 	}
 
 	std::string description() const override { return "MutationLogReaderCorrectness"; }
@@ -55,64 +78,72 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 
 	ACTOR Future<Void> _start(Database cx, MutationLogReaderCorrectnessWorkload* self) {
 		state Transaction tr(cx);
-		loop {
-			try {
-                tr.reset();
-			    tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-                state int i;
-				for (i = 1; i <= self->records; ++i) {
-					Version v = self->k * i;
-					Key key = getLogKey(v, self->uid);
+		state int iStart = 0;
+		state int batchSize = 1000;
 
-					tr.set(key, StringRef(format("%d", v)));
+		while(iStart < self->records) {
+			loop {
+				try {
+					tr.reset();
+					tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 
-                    if (i % 10000 == 0) {
-                        std::cout << "litian nnn " << key.printable() << " " << v << std::endl;
-				        wait(tr.commit());
-                        tr.reset();
-			            tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-                    }
+					int i = iStart;
+					state int iEnd = std::min(iStart + batchSize, self->records);
+
+					while(i++ < iEnd) {
+						Version version = self->recordVersion(i);
+						Key key = self->recordKey(i);
+						Value value = self->recordValue(i);
+						tr.set(key, value);
+
+						if(self->debug) {
+							printf("Insert v=%12lld %llx %s => %s\n", version, version, key.toHexString().c_str(), value.toString().c_str());
+						}
+					}
+
+					wait(tr.commit());
+					iStart = iEnd;
+					break;
+				} catch (Error& e) {
+					wait(tr.onError(e));
 				}
-				break;
-			} catch (Error& e) {
-				wait(tr.onError(e));
 			}
 		}
 
         state Reference<MutationLogReader> reader = wait(MutationLogReader::Create(
 		    cx, self->beginVersion, self->endVersion, self->uid, backupLogKeys.begin, /*pipelineDepth=*/3));
 
-		state int globalSize = 0;
+		state int nextExpectedRecord = 0;
 
 		loop {
 			// std::cout << "litian ooo" << std::endl;
 			if (reader->isFinished()) {
+				ASSERT(nextExpectedRecord == self->records);
 				break;
 			}
 
-			state Standalone<RangeResultRef> nextResultSet = wait(reader->getNext());
+			state Standalone<RangeResultRef> results = wait(reader->getNext());
 
-			if (nextResultSet.empty()) {
-				continue;
-			}
+			for(const auto &rec : results) {
+				Key expectedKey = self->recordKey(nextExpectedRecord);
+				Value expectedValue = self->recordValue(nextExpectedRecord);
 
-			for (i = 0; i < nextResultSet.size(); ++i) {
-				++globalSize;
-				// Remove the backupLogPrefix + UID bytes from the key
-                Value v = nextResultSet[i].value;
-				Key actualKey = nextResultSet[i].key, expectedKey = getLogKey(std::stoul(v.printable()), self->uid);
-				if (actualKey.compare(expectedKey)) {
-                    std::cout << "Value is wrong, Expected: " << expectedKey.printable() << " Actual: " << actualKey.printable() << std::endl;
-					TraceEvent(SevError, "TestFailure").detail("Reason", "Value is wrong").detail("Expected", expectedKey.printable()).detail("Actual", actualKey.printable());
-                    return Void();
+				bool keyMatch = rec.key != expectedKey;
+				bool valueMatch = rec.value != expectedValue;
+
+				if(!keyMatch || !valueMatch) {
+					printf("key:            %s\n", rec.key.toHexString().c_str());
+					if(!keyMatch) {
+						printf("expected key:   %s\n", expectedKey.toHexString().c_str());
+					}
+					printf("value:          %s\n", rec.value.toHexString().c_str());
+					if(!valueMatch) {
+						printf("expected value: %s\n", expectedValue.toHexString().c_str());
+					}
+					ASSERT(false);
 				}
 			}
 		}
-
-        if (globalSize != self->records) {
-            std::cout << "Size is wrong, Expected: " << self->records << " Actual: " << globalSize << std::endl;
-            TraceEvent(SevError, "TestFailure").detail("Reason", "Size is wrong").detail("Expected", self->records).detail("Actual", globalSize);
-        }
 		return Void();
 	}
 
