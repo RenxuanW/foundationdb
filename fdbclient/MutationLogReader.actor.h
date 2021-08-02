@@ -112,6 +112,7 @@ public:
 	// KeyRef(), int pd = 0)
 	MutationLogReader(Database cx, Version bv, Version ev, Key uid, Key beginKey, int pd)
 	  : beginVersion(bv), endVersion(ev), prefix(uid.withPrefix(beginKey)), pipelineDepth(pd) {
+		pipelinedReaders.reserve(256);
 		if (pipelineDepth > 0) {
 			for (int h = 0; h < 256; ++h) {
 				pipelinedReaders.emplace_back((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix);
