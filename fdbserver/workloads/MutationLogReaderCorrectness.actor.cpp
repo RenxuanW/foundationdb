@@ -97,7 +97,7 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 						tr.set(key, value);
 
 						if(self->debug) {
-							printf("Insert v=%12lld %llx %s => %s\n", version, version, key.toHexString().c_str(), value.toString().c_str());
+							printf("Insert version %12" PRId64 " (%" PRIx64 ")  key '%s'  value '%s'\n", version, version, key.toHexString().c_str(), value.toString().c_str());
 						}
 					}
 
@@ -117,6 +117,7 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 
 		loop {
 			state Standalone<RangeResultRef> results = wait(reader->getNext());
+			printf("results: %d records\n", results.size());
 
 			for(const auto &rec : results) {
 				Key expectedKey = self->recordKey(nextExpectedRecord);
