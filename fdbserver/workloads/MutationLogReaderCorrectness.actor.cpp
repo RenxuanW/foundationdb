@@ -57,10 +57,10 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 		uid = BinaryWriter::toValue(deterministicRandom()->randomUniqueID(), Unversioned()); // StringRef(std::string("uid"));
 		baLogRangePrefix = uid.withPrefix(backupLogKeys.begin);
 
-		records = 100;
-		versionRange = 20e6;
-		versionIncrement = versionRange / records;
 		beginVersion = 0;
+		records = 1;
+		versionRange = 1e6;
+		versionIncrement = versionRange / records;
 
 		// The version immediately after the last actual record version
 		endVersion = recordVersion(records - 1) + 1;
@@ -90,7 +90,7 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 					int i = iStart;
 					state int iEnd = std::min(iStart + batchSize, self->records);
 
-					while(i++ < iEnd) {
+					for(; i < iEnd; ++i) {
 						Version version = self->recordVersion(i);
 						Key key = self->recordKey(i);
 						Value value = self->recordValue(i);
@@ -116,34 +116,38 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 		state int nextExpectedRecord = 0;
 
 		loop {
-			// std::cout << "litian ooo" << std::endl;
-			if (reader->isFinished()) {
-				ASSERT(nextExpectedRecord == self->records);
-				break;
-			}
-
 			state Standalone<RangeResultRef> results = wait(reader->getNext());
 
 			for(const auto &rec : results) {
 				Key expectedKey = self->recordKey(nextExpectedRecord);
 				Value expectedValue = self->recordValue(nextExpectedRecord);
-
+	
 				bool keyMatch = rec.key != expectedKey;
 				bool valueMatch = rec.value != expectedValue;
 
-				if(!keyMatch || !valueMatch) {
-					printf("key:            %s\n", rec.key.toHexString().c_str());
-					if(!keyMatch) {
-						printf("expected key:   %s\n", expectedKey.toHexString().c_str());
-					}
-					printf("value:          %s\n", rec.value.toHexString().c_str());
-					if(!valueMatch) {
-						printf("expected value: %s\n", expectedValue.toHexString().c_str());
-					}
-					ASSERT(false);
+				printf("key:            %s\n", rec.key.toHexString().c_str());
+				if(!keyMatch) {
+					printf("expected key:   %s\n", expectedKey.toHexString().c_str());
 				}
+				printf("value:          %s\n", rec.value.toHexString().c_str());
+				if(!valueMatch) {
+					printf("expected value: %s\n", expectedValue.toHexString().c_str());
+				}
+
+				ASSERT(keyMatch);
+				ASSERT(valueMatch);
+				++nextExpectedRecord;
+			}
+
+			if (reader->isFinished()) {
+				break;
 			}
 		}
+
+		printf("records:          %d\n", self->records);
+		printf("expected records: %d\n", nextExpectedRecord);
+		ASSERT(nextExpectedRecord == self->records);
+
 		return Void();
 	}
 
