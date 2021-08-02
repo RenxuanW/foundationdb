@@ -132,39 +132,32 @@ struct EvictablePageCache : ReferenceCounted<EvictablePageCache> {
 	const CacheEvictionType cacheEvictionType;
 };
 
-struct OpenFileInfo : NonCopyable {
-	IAsyncFile* f;
-	Future<Reference<IAsyncFile>> opened; // Only valid until the file is fully opened
-
-	OpenFileInfo() : f(0) {}
-	OpenFileInfo(OpenFileInfo&& r) noexcept : f(r.f), opened(std::move(r.opened)) { r.f = 0; }
-
-	Future<Reference<IAsyncFile>> get() {
-		if (f)
-			return Reference<IAsyncFile>::addRef(f);
-		else
-			return opened;
-	}
-};
-
 struct AFCPage;
 
 class AsyncFileCached final : public IAsyncFile, public ReferenceCounted<AsyncFileCached> {
 	friend struct AFCPage;
 
 public:
+	// Opens a file that uses the FDB in-memory page cache
 	static Future<Reference<IAsyncFile>> open(std::string filename, int flags, int mode) {
 		//TraceEvent("AsyncFileCachedOpen").detail("Filename", filename);
-		if (openFiles.find(filename) == openFiles.end()) {
+		auto itr = openFiles.find(filename);
+		if (itr == openFiles.end()) {
 			auto f = open_impl(filename, flags, mode);
 			if (f.isReady() && f.isError())
 				return f;
-			if (!f.isReady())
-				openFiles[filename].opened = f;
-			else
-				return f.get();
+
+			auto result = openFiles.try_emplace(filename, f);
+
+			// This should be inserting a new entry
+			ASSERT(result.second);
+			itr = result.first;
+
+			// We return here instead of falling through to the outer scope so that we don't delete all references to
+			// the underlying file before returning
+			return itr->second.get();
 		}
-		return openFiles[filename].get();
+		return itr->second.get();
 	}
 
 	Future<int> read(void* data, int length, int64_t offset) override {
@@ -263,7 +256,9 @@ public:
 	~AsyncFileCached() override;
 
 private:
-	static std::map<std::string, OpenFileInfo> openFiles;
+	// A map of filename to the file handle for all opened cached files
+	static std::map<std::string, UnsafeWeakFutureReference<IAsyncFile>> openFiles;
+
 	std::string filename;
 	Reference<IAsyncFile> uncached;
 	int64_t length;
@@ -303,7 +298,7 @@ private:
 	                const std::string& filename,
 	                int64_t length,
 	                Reference<EvictablePageCache> pageCache)
-	  : uncached(uncached), filename(filename), length(length), prevLength(length), pageCache(pageCache),
+	  : filename(filename), uncached(uncached), length(length), prevLength(length), pageCache(pageCache),
 	    currentTruncate(Void()), currentTruncateSize(0), rateControl(nullptr) {
 		if (!g_network->isSimulated()) {
 			countFileCacheWrites.init(LiteralStringRef("AsyncFile.CountFileCacheWrites"), filename);
@@ -330,6 +325,7 @@ private:
 
 	static Future<Reference<IAsyncFile>> open_impl(std::string filename, int flags, int mode);
 
+	// Opens a file that uses the FDB in-memory page cache
 	ACTOR static Future<Reference<IAsyncFile>> open_impl(std::string filename,
 	                                                     int flags,
 	                                                     int mode,
@@ -345,10 +341,7 @@ private:
 			TraceEvent("AFCUnderlyingOpenEnd").detail("Filename", filename);
 			int64_t l = wait(f->size());
 			TraceEvent("AFCUnderlyingSize").detail("Filename", filename).detail("Size", l);
-			auto& of = openFiles[filename];
-			of.f = new AsyncFileCached(f, filename, l, pageCache);
-			of.opened = Future<Reference<IAsyncFile>>();
-			return Reference<IAsyncFile>(of.f);
+			return new AsyncFileCached(f, filename, l, pageCache);
 		} catch (Error& e) {
 			if (e.code() != error_code_actor_cancelled)
 				openFiles.erase(filename);
@@ -617,8 +610,8 @@ struct AFCPage : public EvictablePage, public FastAllocated<AFCPage> {
 	}
 
 	AFCPage(AsyncFileCached* owner, int64_t offset)
-	  : EvictablePage(owner->pageCache), owner(owner), pageOffset(offset), dirty(false), valid(false), truncated(false),
-	    notReading(Void()), notFlushing(Void()), zeroCopyRefCount(0), flushableIndex(-1), writeThroughCount(0) {
+	  : EvictablePage(owner->pageCache), owner(owner), pageOffset(offset), notReading(Void()), notFlushing(Void()),
+	    dirty(false), valid(false), truncated(false), writeThroughCount(0), flushableIndex(-1), zeroCopyRefCount(0) {
 		pageCache->allocate(this);
 	}
 

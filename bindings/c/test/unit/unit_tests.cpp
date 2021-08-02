@@ -219,7 +219,7 @@ GetRangeResult get_range(fdb::Transaction& tr,
 	for (int i = 0; i < out_count; ++i) {
 		std::string key((const char*)out_kv[i].key, out_kv[i].key_length);
 		std::string value((const char*)out_kv[i].value, out_kv[i].value_length);
-		results.push_back(std::make_pair(key, value));
+		results.emplace_back(key, value);
 	}
 	return GetRangeResult{ results, out_more != 0, 0 };
 }
@@ -263,13 +263,15 @@ TEST_CASE("fdb_future_set_callback") {
 		    &context));
 
 		fdb_error_t err = wait_future(f1);
+
+		context.event.wait(); // Wait until callback is called
+
 		if (err) {
 			fdb::EmptyFuture f2 = tr.on_error(err);
 			fdb_check(wait_future(f2));
 			continue;
 		}
 
-		context.event.wait();
 		break;
 	}
 }
@@ -515,10 +517,10 @@ TEST_CASE("write system key") {
 	fdb::Transaction tr(db);
 
 	std::string syskey("\xff\x02");
-	fdb_check(tr.set_option(FDB_TR_OPTION_ACCESS_SYSTEM_KEYS, nullptr, 0));
-	tr.set(syskey, "bar");
 
 	while (1) {
+		fdb_check(tr.set_option(FDB_TR_OPTION_ACCESS_SYSTEM_KEYS, nullptr, 0));
+		tr.set(syskey, "bar");
 		fdb::EmptyFuture f1 = tr.commit();
 
 		fdb_error_t err = wait_future(f1);
@@ -1000,16 +1002,25 @@ TEST_CASE("fdb_transaction_clear") {
 }
 
 TEST_CASE("fdb_transaction_atomic_op FDB_MUTATION_TYPE_ADD") {
-	insert_data(db, create_data({ { "foo", "a" } }));
+	insert_data(db, create_data({ { "foo", "\x00" } }));
 
 	fdb::Transaction tr(db);
 	int8_t param = 1;
+	int potentialCommitCount = 0;
 	while (1) {
 		tr.atomic_op(key("foo"), (const uint8_t*)&param, sizeof(param), FDB_MUTATION_TYPE_ADD);
+		if (potentialCommitCount + 1 == 256) {
+			// Trying to commit again might overflow the one unsigned byte we're looking at
+			break;
+		}
+		++potentialCommitCount;
 		fdb::EmptyFuture f1 = tr.commit();
 
 		fdb_error_t err = wait_future(f1);
 		if (err) {
+			if (fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, err)) {
+				--potentialCommitCount;
+			}
 			fdb::EmptyFuture f2 = tr.on_error(err);
 			fdb_check(wait_future(f2));
 			continue;
@@ -1020,7 +1031,8 @@ TEST_CASE("fdb_transaction_atomic_op FDB_MUTATION_TYPE_ADD") {
 	auto value = get_value(key("foo"), /* snapshot */ false, {});
 	REQUIRE(value.has_value());
 	CHECK(value->size() == 1);
-	CHECK(value->data()[0] == 'b'); // incrementing 'a' results in 'b'
+	CHECK(uint8_t(value->data()[0]) > 0);
+	CHECK(uint8_t(value->data()[0]) <= potentialCommitCount);
 }
 
 TEST_CASE("fdb_transaction_atomic_op FDB_MUTATION_TYPE_BIT_AND") {
@@ -1190,19 +1202,29 @@ TEST_CASE("fdb_transaction_atomic_op FDB_MUTATION_TYPE_BIT_XOR") {
 
 	fdb::Transaction tr(db);
 	char param[] = { 'a', 'd' };
+	int potentialCommitCount = 0;
 	while (1) {
 		tr.atomic_op(key("foo"), (const uint8_t*)"b", 1, FDB_MUTATION_TYPE_BIT_XOR);
 		tr.atomic_op(key("bar"), (const uint8_t*)param, 2, FDB_MUTATION_TYPE_BIT_XOR);
 		tr.atomic_op(key("baz"), (const uint8_t*)"d", 1, FDB_MUTATION_TYPE_BIT_XOR);
+		++potentialCommitCount;
 		fdb::EmptyFuture f1 = tr.commit();
 
 		fdb_error_t err = wait_future(f1);
 		if (err) {
+			if (fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, err)) {
+				--potentialCommitCount;
+			}
 			fdb::EmptyFuture f2 = tr.on_error(err);
 			fdb_check(wait_future(f2));
 			continue;
 		}
 		break;
+	}
+
+	if (potentialCommitCount != 1) {
+		MESSAGE("Transaction may not have committed exactly once. Suppressing assertions");
+		return;
 	}
 
 	auto value = get_value(key("foo"), /* snapshot */ false, {});
@@ -1255,13 +1277,18 @@ TEST_CASE("fdb_transaction_atomic_op FDB_MUTATION_TYPE_APPEND_IF_FITS") {
 	insert_data(db, create_data({ { "foo", "f" } }));
 
 	fdb::Transaction tr(db);
+	int potentialCommitCount = 0;
 	while (1) {
 		tr.atomic_op(key("foo"), (const uint8_t*)"db", 2, FDB_MUTATION_TYPE_APPEND_IF_FITS);
 		tr.atomic_op(key("bar"), (const uint8_t*)"foundation", 10, FDB_MUTATION_TYPE_APPEND_IF_FITS);
+		++potentialCommitCount;
 		fdb::EmptyFuture f1 = tr.commit();
 
 		fdb_error_t err = wait_future(f1);
 		if (err) {
+			if (fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, err)) {
+				--potentialCommitCount;
+			}
 			fdb::EmptyFuture f2 = tr.on_error(err);
 			fdb_check(wait_future(f2));
 			continue;
@@ -1269,13 +1296,18 @@ TEST_CASE("fdb_transaction_atomic_op FDB_MUTATION_TYPE_APPEND_IF_FITS") {
 		break;
 	}
 
-	auto value = get_value(key("foo"), /* snapshot */ false, {});
-	REQUIRE(value.has_value());
-	CHECK(value->compare("fdb") == 0);
+	auto value_foo = get_value(key("foo"), /* snapshot */ false, {});
+	REQUIRE(value_foo.has_value());
 
-	value = get_value(key("bar"), /* snapshot */ false, {});
-	REQUIRE(value.has_value());
-	CHECK(value->compare("foundation") == 0);
+	auto value_bar = get_value(key("bar"), /* snapshot */ false, {});
+	REQUIRE(value_bar.has_value());
+
+	if (potentialCommitCount != 1) {
+		MESSAGE("Transaction may not have committed exactly once. Suppressing assertions");
+	} else {
+		CHECK(value_foo.value() == "fdb");
+		CHECK(value_bar.value() == "foundation");
+	}
 }
 
 TEST_CASE("fdb_transaction_atomic_op FDB_MUTATION_TYPE_MAX") {
@@ -1627,7 +1659,7 @@ TEST_CASE("fdb_transaction_watch max watches") {
 		fdb_check(f1.set_callback(
 		    +[](FDBFuture* f, void* param) {
 			    fdb_error_t err = fdb_future_get_error(f);
-			    if (err != 1101) { // operation_cancelled
+			    if (err != /*operation_cancelled*/ 1101 && !fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, err)) {
 				    CHECK(err == 1032); // too_many_watches
 			    }
 			    auto* event = static_cast<std::shared_ptr<FdbEvent>*>(param);
@@ -1638,7 +1670,7 @@ TEST_CASE("fdb_transaction_watch max watches") {
 		fdb_check(f2.set_callback(
 		    +[](FDBFuture* f, void* param) {
 			    fdb_error_t err = fdb_future_get_error(f);
-			    if (err != 1101) { // operation_cancelled
+			    if (err != /*operation_cancelled*/ 1101 && !fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, err)) {
 				    CHECK(err == 1032); // too_many_watches
 			    }
 			    auto* event = static_cast<std::shared_ptr<FdbEvent>*>(param);
@@ -1649,7 +1681,7 @@ TEST_CASE("fdb_transaction_watch max watches") {
 		fdb_check(f3.set_callback(
 		    +[](FDBFuture* f, void* param) {
 			    fdb_error_t err = fdb_future_get_error(f);
-			    if (err != 1101) { // operation_cancelled
+			    if (err != /*operation_cancelled*/ 1101 && !fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, err)) {
 				    CHECK(err == 1032); // too_many_watches
 			    }
 			    auto* event = static_cast<std::shared_ptr<FdbEvent>*>(param);
@@ -1660,7 +1692,7 @@ TEST_CASE("fdb_transaction_watch max watches") {
 		fdb_check(f4.set_callback(
 		    +[](FDBFuture* f, void* param) {
 			    fdb_error_t err = fdb_future_get_error(f);
-			    if (err != 1101) { // operation_cancelled
+			    if (err != /*operation_cancelled*/ 1101 && !fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, err)) {
 				    CHECK(err == 1032); // too_many_watches
 			    }
 			    auto* event = static_cast<std::shared_ptr<FdbEvent>*>(param);
@@ -1722,7 +1754,7 @@ TEST_CASE("fdb_transaction_cancel") {
 	// ... until the transaction has been reset.
 	tr.reset();
 	fdb::ValueFuture f2 = tr.get("foo", /* snapshot */ false);
-	fdb_check(wait_future(f2));
+	CHECK(wait_future(f2) != 1025); // transaction_cancelled
 }
 
 TEST_CASE("fdb_transaction_add_conflict_range") {
@@ -2196,23 +2228,105 @@ TEST_CASE("monitor_network_busyness") {
 	CHECK(containsGreaterZero);
 }
 
+// Commit a transaction and confirm it has not been reset
+TEST_CASE("commit_does_not_reset") {
+	fdb::Transaction tr(db);
+	fdb::Transaction tr2(db);
+
+	// Commit two transactions, one that will fail with conflict and the other
+	// that will succeed. Ensure both transactions are not reset at the end.
+	while (1) {
+		fdb::Int64Future tr1GrvFuture = tr.get_read_version();
+		fdb_error_t err = wait_future(tr1GrvFuture);
+		if (err) {
+			fdb::EmptyFuture tr1OnErrorFuture = tr.on_error(err);
+			fdb_check(wait_future(tr1OnErrorFuture));
+			continue;
+		}
+
+		int64_t tr1StartVersion;
+		CHECK(!tr1GrvFuture.get(&tr1StartVersion));
+
+		fdb::Int64Future tr2GrvFuture = tr2.get_read_version();
+		err = wait_future(tr2GrvFuture);
+
+		if (err) {
+			fdb::EmptyFuture tr2OnErrorFuture = tr2.on_error(err);
+			fdb_check(wait_future(tr2OnErrorFuture));
+			continue;
+		}
+
+		int64_t tr2StartVersion;
+		CHECK(!tr2GrvFuture.get(&tr2StartVersion));
+
+		tr.set(key("foo"), "bar");
+		fdb::EmptyFuture tr1CommitFuture = tr.commit();
+		err = wait_future(tr1CommitFuture);
+		if (err) {
+			fdb::EmptyFuture tr1OnErrorFuture = tr.on_error(err);
+			fdb_check(wait_future(tr1OnErrorFuture));
+			continue;
+		}
+
+		fdb_check(tr2.add_conflict_range(key("foo"), strinc(key("foo")), FDB_CONFLICT_RANGE_TYPE_READ));
+		tr2.set(key("foo"), "bar");
+		fdb::EmptyFuture tr2CommitFuture = tr2.commit();
+		err = wait_future(tr2CommitFuture);
+		CHECK(err == 1020); // not_committed
+
+		fdb::Int64Future tr1GrvFuture2 = tr.get_read_version();
+		err = wait_future(tr1GrvFuture2);
+		if (err) {
+			fdb::EmptyFuture tr1OnErrorFuture = tr.on_error(err);
+			fdb_check(wait_future(tr1OnErrorFuture));
+			continue;
+		}
+
+		int64_t tr1EndVersion;
+		CHECK(!tr1GrvFuture2.get(&tr1EndVersion));
+
+		fdb::Int64Future tr2GrvFuture2 = tr2.get_read_version();
+		err = wait_future(tr2GrvFuture2);
+		if (err) {
+			fdb::EmptyFuture tr2OnErrorFuture = tr2.on_error(err);
+			fdb_check(wait_future(tr2OnErrorFuture));
+			continue;
+		}
+
+		int64_t tr2EndVersion;
+		CHECK(!tr2GrvFuture2.get(&tr2EndVersion));
+
+		// If we reset the transaction, then the read version will change
+		CHECK(tr1StartVersion == tr1EndVersion);
+		CHECK(tr2StartVersion == tr2EndVersion);
+		break;
+	}
+}
+
 int main(int argc, char** argv) {
-	if (argc != 3 && argc != 4) {
+	if (argc < 3) {
 		std::cout << "Unit tests for the FoundationDB C API.\n"
-		          << "Usage: fdb_c_unit_tests /path/to/cluster_file key_prefix [externalClient]" << std::endl;
+		          << "Usage: fdb_c_unit_tests /path/to/cluster_file key_prefix [externalClient] [doctest args]"
+		          << std::endl;
 		return 1;
 	}
 	fdb_check(fdb_select_api_version(710));
-	if (argc == 4) {
+	if (argc >= 4) {
 		std::string externalClientLibrary = argv[3];
-		fdb_check(fdb_network_set_option(
-		    FDBNetworkOption::FDB_NET_OPTION_DISABLE_LOCAL_CLIENT, reinterpret_cast<const uint8_t*>(""), 0));
-		fdb_check(fdb_network_set_option(FDBNetworkOption::FDB_NET_OPTION_EXTERNAL_CLIENT_LIBRARY,
-		                                 reinterpret_cast<const uint8_t*>(externalClientLibrary.c_str()),
-		                                 externalClientLibrary.size()));
+		if (externalClientLibrary.substr(0, 2) != "--") {
+			fdb_check(fdb_network_set_option(
+			    FDBNetworkOption::FDB_NET_OPTION_DISABLE_LOCAL_CLIENT, reinterpret_cast<const uint8_t*>(""), 0));
+			fdb_check(fdb_network_set_option(FDBNetworkOption::FDB_NET_OPTION_EXTERNAL_CLIENT_LIBRARY,
+			                                 reinterpret_cast<const uint8_t*>(externalClientLibrary.c_str()),
+			                                 externalClientLibrary.size()));
+		}
 	}
 
+	/* fdb_check(fdb_network_set_option( */
+	/*     FDBNetworkOption::FDB_NET_OPTION_CLIENT_BUGGIFY_ENABLE, reinterpret_cast<const uint8_t*>(""), 0)); */
+
 	doctest::Context context;
+	context.applyCommandLine(argc, argv);
 
 	fdb_check(fdb_setup_network());
 	std::thread network_thread{ &fdb_run_network };

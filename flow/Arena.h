@@ -102,6 +102,7 @@ public:
 	Arena& operator=(Arena&&) noexcept;
 
 	void dependsOn(const Arena& p);
+	void* allocate4kAlignedBuffer(uint32_t size);
 	size_t getSize() const;
 
 	bool hasFree(size_t size, const void* address);
@@ -129,7 +130,15 @@ struct scalar_traits<Arena> : std::true_type {
 };
 
 struct ArenaBlockRef {
-	ArenaBlock* next;
+	union {
+		ArenaBlock* next;
+		void* aligned4kBuffer;
+	};
+
+	// Only one of (next, aligned4kBuffer) is valid at any one time, as they occupy the same space.
+	// If aligned4kBufferSize is not 0, aligned4kBuffer is valid, otherwise next is valid.
+	uint32_t aligned4kBufferSize;
+
 	uint32_t nextBlockOffset;
 };
 
@@ -160,7 +169,9 @@ struct ArenaBlock : NonCopyable, ThreadSafeReferenceCounted<ArenaBlock> {
 	void getUniqueBlocks(std::set<ArenaBlock*>& a);
 	int addUsed(int bytes);
 	void makeReference(ArenaBlock* next);
+	void* make4kAlignedBuffer(uint32_t size);
 	static void dependOn(Reference<ArenaBlock>& self, ArenaBlock* other);
+	static void* dependOn4kAlignedBuffer(Reference<ArenaBlock>& self, uint32_t size);
 	static void* allocate(Reference<ArenaBlock>& self, int bytes);
 	// Return an appropriately-sized ArenaBlock to store the given data
 	static ArenaBlock* create(int dataSize, Reference<ArenaBlock>& next);
@@ -226,12 +237,12 @@ public:
 	}
 
 	template <class R>
-	Optional<R> map(std::function<R(T)> f) const {
-		if (present()) {
-			return Optional<R>(f(get()));
-		} else {
-			return Optional<R>();
-		}
+	Optional<R> map(std::function<R(T)> f) const& {
+		return present() ? Optional<R>(f(get())) : Optional<R>();
+	}
+	template <class R>
+	Optional<R> map(std::function<R(T)> f) && {
+		return present() ? Optional<R>(f(std::move(*this).get())) : Optional<R>();
 	}
 
 	bool present() const { return impl.has_value(); }
@@ -247,7 +258,14 @@ public:
 		UNSTOPPABLE_ASSERT(impl.has_value());
 		return std::move(impl.value());
 	}
-	T orDefault(T const& default_value) const { return impl.value_or(default_value); }
+	template <class U>
+	T orDefault(U&& defaultValue) const& {
+		return impl.value_or(std::forward<U>(defaultValue));
+	}
+	template <class U>
+	T orDefault(U&& defaultValue) && {
+		return std::move(impl).value_or(std::forward<U>(defaultValue));
+	}
 
 	// Spaceship operator.  Treats not-present as less-than present.
 	int compare(Optional const& rhs) const {
@@ -433,8 +451,18 @@ public:
 
 	StringRef substr(int start) const { return StringRef(data + start, length - start); }
 	StringRef substr(int start, int size) const { return StringRef(data + start, size); }
-	bool startsWith(const StringRef& s) const { return size() >= s.size() && !memcmp(begin(), s.begin(), s.size()); }
+	bool startsWith(const StringRef& s) const {
+		// Avoid UB - can't pass nullptr to memcmp
+		if (s.size() == 0) {
+			return true;
+		}
+		return size() >= s.size() && !memcmp(begin(), s.begin(), s.size());
+	}
 	bool endsWith(const StringRef& s) const {
+		// Avoid UB - can't pass nullptr to memcmp
+		if (s.size() == 0) {
+			return true;
+		}
 		return size() >= s.size() && !memcmp(end() - s.size(), s.begin(), s.size());
 	}
 
@@ -634,7 +662,16 @@ struct Traceable<Standalone<T>> : std::conditional<Traceable<T>::value, std::tru
 	static std::string toString(const Standalone<T>& value) { return Traceable<T>::toString(value); }
 };
 
-#define LiteralStringRef(str) StringRef((const uint8_t*)(str), sizeof((str)) - 1)
+namespace literal_string_ref {
+template <class T, int Size>
+StringRef LiteralStringRefHelper(const char* str) {
+	static_assert(std::is_same_v<T, const char(&)[Size]> || std::is_same_v<T, const char[Size]>,
+	              "Argument to LiteralStringRef must be a literal string");
+	return StringRef(reinterpret_cast<const uint8_t*>(str), Size - 1);
+}
+} // namespace literal_string_ref
+#define LiteralStringRef(str) literal_string_ref::LiteralStringRefHelper<decltype(str), sizeof(str)>(str)
+
 inline StringRef operator"" _sr(const char* str, size_t size) {
 	return StringRef(reinterpret_cast<const uint8_t*>(str), size);
 }
@@ -771,6 +808,7 @@ struct VectorRefPreserializer {
 	void invalidate() {}
 	void add(const T& item) {}
 	void remove(const T& item) {}
+	void reset() {}
 };
 
 template <class T>
@@ -802,6 +840,7 @@ struct VectorRefPreserializer<T, VecSerStrategy::String> {
 			_cached_size -= _string_traits.getSize(item);
 		}
 	}
+	void reset() { _cached_size = 0; }
 };
 
 template <class T, VecSerStrategy SerStrategy = VecSerStrategy::FlatBuffers>
@@ -1018,6 +1057,11 @@ public:
 			VPS::add(*ptr);
 		}
 		m_size = size;
+	}
+
+	void clear() {
+		VPS::reset();
+		m_size = 0;
 	}
 
 	void reserve(Arena& p, int size) {

@@ -75,7 +75,7 @@ struct HealthMetricsApiWorkload : TestWorkload {
 
 	Future<bool> check(Database const& cx) override {
 		if (healthMetricsStoppedUpdating) {
-			TraceEvent(SevError, "HealthMetricsStoppedUpdating");
+			TraceEvent(SevError, "HealthMetricsStoppedUpdating").log();
 			return false;
 		}
 		bool correctHealthMetricsState = true;
@@ -168,6 +168,7 @@ struct HealthMetricsApiWorkload : TestWorkload {
 				traceDiskUsage.detail(format("Storage-%s", ss.first.toString().c_str()), storageStats.diskUsage);
 			}
 			TraceEvent traceTLogQueue("TLogQueue");
+			traceTLogQueue.setMaxEventLength(10000);
 			for (const auto& ss : healthMetrics.tLogQueue) {
 				self->detailedWorstTLogQueue = std::max(self->detailedWorstTLogQueue, ss.second);
 				traceTLogQueue.detail(format("TLog-%s", ss.first.toString().c_str()), ss.second);

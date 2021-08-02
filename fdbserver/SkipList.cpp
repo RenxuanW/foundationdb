@@ -92,7 +92,7 @@ struct KeyInfo {
 
 	KeyInfo() = default;
 	KeyInfo(StringRef key, bool begin, bool write, int transaction, int* pIndex)
-	  : key(key), begin(begin), write(write), transaction(transaction), pIndex(pIndex) {}
+	  : key(key), pIndex(pIndex), begin(begin), write(write), transaction(transaction) {}
 };
 
 force_inline int extra_ordering(const KeyInfo& ki) {
@@ -343,7 +343,7 @@ public:
 		StringRef value;
 
 		Finger() = default;
-		Finger(Node* header, const StringRef& ptr) : value(ptr), x(header) {}
+		Finger(Node* header, const StringRef& ptr) : x(header), value(ptr) {}
 
 		void init(const StringRef& value, Node* header) {
 			this->value = value;
@@ -355,8 +355,10 @@ public:
 		// pre: !finished()
 		force_inline void prefetch() {
 			Node* next = x->getNext(level - 1);
-			_mm_prefetch((const char*)next, _MM_HINT_T0);
-			_mm_prefetch((const char*)next + 64, _MM_HINT_T0);
+			if (next) {
+				_mm_prefetch((const char*)next, _MM_HINT_T0);
+				_mm_prefetch((const char*)next + 64, _MM_HINT_T0);
+			}
 		}
 
 		// pre: !finished()
@@ -784,7 +786,7 @@ private:
 };
 
 struct ConflictSet {
-	ConflictSet() : oldestVersion(0), removalKey(makeString(0)) {}
+	ConflictSet() : removalKey(makeString(0)), oldestVersion(0) {}
 	~ConflictSet() {}
 
 	SkipList versionHistory;

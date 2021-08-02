@@ -231,8 +231,8 @@ struct MetricData {
 	BinaryWriter writer;
 
 	explicit MetricData(uint64_t appendStart = 0)
-	  : writer(AssumeVersion(g_network->protocolVersion())), start(0), rollTime(std::numeric_limits<uint64_t>::max()),
-	    appendStart(appendStart) {}
+	  : start(0), rollTime(std::numeric_limits<uint64_t>::max()), appendStart(appendStart),
+	    writer(AssumeVersion(g_network->protocolVersion())) {}
 
 	MetricData(MetricData&& r) noexcept
 	  : start(r.start), rollTime(r.rollTime), appendStart(r.appendStart), writer(std::move(r.writer)) {}
@@ -720,7 +720,7 @@ struct TimeDescriptor {
 };
 
 struct BaseMetric {
-	BaseMetric(MetricNameRef const& name) : metricName(name), pCollection(nullptr), registered(false), enabled(false) {
+	BaseMetric(MetricNameRef const& name) : metricName(name), enabled(false), pCollection(nullptr), registered(false) {
 		setConfig(false);
 	}
 	virtual ~BaseMetric() {}
@@ -881,7 +881,7 @@ struct EventMetric final : E, ReferenceCounted<EventMetric<E>>, MetricUtil<Event
 		time.flushField(mk, rollTime, batch);
 		flushFields(typename Descriptor<E>::field_indexes(), mk, rollTime, batch);
 		if (!latestRecorded) {
-			batch.updates.push_back(std::make_pair(mk.packLatestKey(), StringRef()));
+			batch.updates.emplace_back(mk.packLatestKey(), StringRef());
 			latestRecorded = true;
 		}
 	}
@@ -1249,7 +1249,7 @@ public:
 
 	void flushData(const MetricKeyRef& mk, uint64_t rollTime, MetricUpdateBatch& batch) override {
 		if (!recorded) {
-			batch.updates.push_back(std::make_pair(mk.packLatestKey(), getLatestAsValue()));
+			batch.updates.emplace_back(mk.packLatestKey(), getLatestAsValue());
 			recorded = true;
 		}
 

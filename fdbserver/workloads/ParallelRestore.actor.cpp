@@ -23,14 +23,14 @@
 #include "fdbclient/BackupContainer.h"
 #include "fdbserver/workloads/workloads.actor.h"
 #include "fdbserver/workloads/BulkSetup.actor.h"
-#include "fdbclient/RestoreWorkerInterface.actor.h"
+#include "fdbserver/RestoreWorkerInterface.actor.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
 
 // A workload which test the correctness of backup and restore process
 struct RunRestoreWorkerWorkload : TestWorkload {
 	Future<Void> worker;
 	RunRestoreWorkerWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
-		TraceEvent("RunRestoreWorkerWorkloadMX");
+		TraceEvent("RunRestoreWorkerWorkloadMX").log();
 	}
 
 	std::string description() const override { return "RunRestoreWorkerWorkload"; }

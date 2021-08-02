@@ -20,6 +20,7 @@
 
 #ifndef FDBRPC_STATS_H
 #define FDBRPC_STATS_H
+#include <type_traits>
 #pragma once
 
 // Yet another performance statistics interface
@@ -79,7 +80,7 @@ struct CounterCollection {
 	void logToTraceEvent(TraceEvent& te) const;
 };
 
-struct Counter : ICounter, NonCopyable {
+struct Counter final : ICounter, NonCopyable {
 public:
 	typedef int64_t Value;
 
@@ -136,7 +137,15 @@ struct SpecialCounter final : ICounter, FastAllocated<SpecialCounter<F>>, NonCop
 	void remove() override { delete this; }
 
 	std::string const& getName() const override { return name; }
-	int64_t getValue() const override { return f(); }
+	int64_t getValue() const override {
+		auto result = f();
+		// Disallow conversion from floating point to int64_t, since this has
+		// been a source of confusion - e.g. a percentage represented as a
+		// fraction between 0 and 1 is not meaningful after conversion to
+		// int64_t.
+		static_assert(!std::is_floating_point_v<decltype(result)>);
+		return result;
+	}
 
 	void resetInterval() override {}
 
@@ -218,7 +227,7 @@ private:
 class LatencySample {
 public:
 	LatencySample(std::string name, UID id, double loggingInterval, int sampleSize)
-	  : name(name), id(id), sample(sampleSize), sampleStart(now()) {
+	  : name(name), id(id), sampleStart(now()), sample(sampleSize) {
 		logger = recurring([this]() { logSample(); }, loggingInterval);
 	}
 

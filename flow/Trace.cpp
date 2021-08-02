@@ -70,7 +70,7 @@ struct SuppressionMap {
 	int64_t checkAndInsertSuppression(std::string type, double duration) {
 		ASSERT(g_network);
 		if (suppressionMap.size() >= FLOW_KNOBS->MAX_TRACE_SUPPRESSIONS) {
-			TraceEvent(SevWarnAlways, "ClearingTraceSuppressionMap");
+			TraceEvent(SevWarnAlways, "ClearingTraceSuppressionMap").log();
 			suppressionMap.clear();
 		}
 
@@ -205,7 +205,7 @@ public:
 		WriterThread(Reference<BarrierList> barriers,
 		             Reference<ITraceLogWriter> logWriter,
 		             Reference<ITraceLogFormatter> formatter)
-		  : barriers(barriers), logWriter(logWriter), formatter(formatter) {}
+		  : logWriter(logWriter), formatter(formatter), barriers(barriers) {}
 
 		void init() override {}
 
@@ -277,8 +277,8 @@ public:
 	};
 
 	TraceLog()
-	  : bufferLength(0), loggedLength(0), opened(false), preopenOverflowCount(0), barriers(new BarrierList),
-	    logTraceEventMetrics(false), formatter(new XmlTraceLogFormatter()), issues(new IssuesList) {}
+	  : formatter(new XmlTraceLogFormatter()), loggedLength(0), bufferLength(0), opened(false), preopenOverflowCount(0),
+	    logTraceEventMetrics(false), issues(new IssuesList), barriers(new BarrierList) {}
 
 	bool isOpen() const { return opened; }
 
@@ -503,7 +503,7 @@ public:
 		}
 	}
 
-	void addRole(std::string role) {
+	void addRole(std::string const& role) {
 		MutexHolder holder(mutex);
 
 		RoleInfo& r = mutateRoleInfo();
@@ -511,7 +511,7 @@ public:
 		r.refreshRolesString();
 	}
 
-	void removeRole(std::string role) {
+	void removeRole(std::string const& role) {
 		MutexHolder holder(mutex);
 
 		RoleInfo& r = mutateRoleInfo();
@@ -557,13 +557,13 @@ NetworkAddress getAddressIndex() {
 }
 
 // This does not check for simulation, and as such is not safe for external callers
-void clearPrefix_internal(std::map<std::string, TraceEventFields>& data, std::string prefix) {
+void clearPrefix_internal(std::map<std::string, TraceEventFields>& data, std::string const& prefix) {
 	auto first = data.lower_bound(prefix);
 	auto last = data.lower_bound(strinc(prefix).toString());
 	data.erase(first, last);
 }
 
-void LatestEventCache::clear(std::string prefix) {
+void LatestEventCache::clear(std::string const& prefix) {
 	clearPrefix_internal(latest[getAddressIndex()], prefix);
 }
 
@@ -575,7 +575,7 @@ void LatestEventCache::set(std::string tag, const TraceEventFields& contents) {
 	latest[getAddressIndex()][tag] = contents;
 }
 
-TraceEventFields LatestEventCache::get(std::string tag) {
+TraceEventFields LatestEventCache::get(std::string const& tag) {
 	return latest[getAddressIndex()][tag];
 }
 
@@ -757,11 +757,11 @@ bool traceFileIsOpen() {
 	return g_traceLog.isOpen();
 }
 
-void addTraceRole(std::string role) {
+void addTraceRole(std::string const& role) {
 	g_traceLog.addRole(role);
 }
 
-void removeTraceRole(std::string role) {
+void removeTraceRole(std::string const& role) {
 	g_traceLog.removeRole(role);
 }
 
@@ -835,28 +835,27 @@ Future<Void> pingTraceLogWriterThread() {
 }
 
 TraceEvent::TraceEvent(const char* type, UID id)
-  : id(id), type(type), severity(SevInfo), initialized(false), enabled(true), logged(false) {
+  : initialized(false), enabled(true), logged(false), severity(SevInfo), type(type), id(id) {
 	setMaxFieldLength(0);
 	setMaxEventLength(0);
 }
 TraceEvent::TraceEvent(Severity severity, const char* type, UID id)
-  : id(id), type(type), severity(severity), initialized(false), logged(false),
-    enabled(g_network == nullptr || FLOW_KNOBS->MIN_TRACE_SEVERITY <= severity) {
+  : initialized(false), enabled(g_network == nullptr || FLOW_KNOBS->MIN_TRACE_SEVERITY <= severity), logged(false),
+    severity(severity), type(type), id(id) {
 	setMaxFieldLength(0);
 	setMaxEventLength(0);
 }
 TraceEvent::TraceEvent(TraceInterval& interval, UID id)
-  : id(id), type(interval.type), severity(interval.severity), initialized(false), logged(false),
-    enabled(g_network == nullptr || FLOW_KNOBS->MIN_TRACE_SEVERITY <= interval.severity) {
-
+  : initialized(false), enabled(g_network == nullptr || FLOW_KNOBS->MIN_TRACE_SEVERITY <= interval.severity),
+    logged(false), severity(interval.severity), type(interval.type), id(id) {
 	setMaxFieldLength(0);
 	setMaxEventLength(0);
 
 	init(interval);
 }
 TraceEvent::TraceEvent(Severity severity, TraceInterval& interval, UID id)
-  : id(id), type(interval.type), severity(severity), initialized(false), logged(false),
-    enabled(g_network == nullptr || FLOW_KNOBS->MIN_TRACE_SEVERITY <= severity) {
+  : initialized(false), enabled(g_network == nullptr || FLOW_KNOBS->MIN_TRACE_SEVERITY <= severity), logged(false),
+    severity(severity), type(interval.type), id(id) {
 
 	setMaxFieldLength(0);
 	setMaxEventLength(0);
@@ -1121,6 +1120,17 @@ TraceEvent& TraceEvent::setMaxFieldLength(int maxFieldLength) {
 	return *this;
 }
 
+// A unique, per-thread ID.  This is particularly important for multithreaded
+// or multiversion client setups and for multithreaded storage engines.
+thread_local uint64_t threadId = 0;
+
+void TraceEvent::setThreadId() {
+	while (threadId == 0) {
+		threadId = deterministicRandom()->randomUInt64();
+	}
+	this->detail("ThreadID", threadId);
+}
+
 int TraceEvent::getMaxFieldLength() const {
 	return maxFieldLength;
 }
@@ -1173,6 +1183,8 @@ void TraceEvent::log() {
 				if (FLOW_KNOBS && FLOW_KNOBS->TRACE_DATETIME_ENABLED) {
 					fields.mutate(timeIndex + 1).second = TraceEvent::printRealTime(time);
 				}
+
+				setThreadId();
 
 				if (this->severity == SevError) {
 					severity = SevInfo;

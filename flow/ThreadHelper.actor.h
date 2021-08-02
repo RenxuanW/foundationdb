@@ -33,17 +33,38 @@
 #include "flow/flow.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
 
-// template <class F>
-// void onMainThreadVoid( F f ) {
-// 	Promise<Void> signal;
-// 	doOnMainThreadVoid( signal.getFuture(), f );
-// 	g_network->onMainThread( std::move(signal), TaskPriority::DefaultOnMainThread );
-// }
+// Helper actor. Do not use directly!
+namespace internal_thread_helper {
 
+ACTOR template <class F>
+void doOnMainThreadVoid(Future<Void> signal, F f, Error* err) {
+	wait(signal);
+	if (err && err->code() != invalid_error_code)
+		return;
+	try {
+		f();
+	} catch (Error& e) {
+		if (err)
+			*err = e;
+	}
+}
+
+} // namespace internal_thread_helper
+
+// onMainThreadVoid runs a functor on the FDB network thread. The value returned by the functor is ignored.
+// There is no way to wait for the functor run to finish. For cases where you need a result back or simply need
+// to know when the functor has finished running, use `onMainThread`.
+//
+// WARNING: Successive invocations of `onMainThreadVoid` with different task priorities may not run in the order they were called.
+//
+// WARNING: The error returned in `err` can only be read on the FDB network thread because there is no way to
+// order the write to `err` with actions on other threads.
+//
+// `onMainThreadVoid` is defined here because of the dependency in `ThreadSingleAssignmentVarBase`.
 template <class F>
-void onMainThreadVoid(F f, Error* err, TaskPriority taskID = TaskPriority::DefaultOnMainThread) {
+void onMainThreadVoid(F f, Error* err = nullptr, TaskPriority taskID = TaskPriority::DefaultOnMainThread) {
 	Promise<Void> signal;
-	doOnMainThreadVoid(signal.getFuture(), f, err);
+	internal_thread_helper::doOnMainThreadVoid(signal.getFuture(), f, err);
 	g_network->onMainThread(std::move(signal), taskID);
 }
 
@@ -221,7 +242,7 @@ public:
 
 	void send(Never) {
 		if (TRACE_SAMPLE())
-			TraceEvent(SevSample, "Promise_sendNever");
+			TraceEvent(SevSample, "Promise_sendNever").log();
 		ThreadSpinLockHolder holder(mutex);
 		if (!canBeSetUnsafe())
 			ASSERT(false); // Promise fulfilled twice
@@ -318,8 +339,7 @@ public:
 		    [this]() {
 			    this->cancelFuture.cancel();
 			    this->delref();
-		    },
-		    nullptr);
+		    });
 	}
 
 	void releaseMemory() {
@@ -379,7 +399,7 @@ public:
 
 	void send(const T& value) {
 		if (TRACE_SAMPLE())
-			TraceEvent(SevSample, "Promise_send");
+			TraceEvent(SevSample, "Promise_send").log();
 		this->mutex.enter();
 		if (!canBeSetUnsafe()) {
 			this->mutex.leave();
@@ -490,7 +510,7 @@ private:
 
 // A callback class used to convert a ThreadFuture into a Future
 template <class T>
-struct CompletionCallback : public ThreadCallback, ReferenceCounted<CompletionCallback<T>> {
+struct CompletionCallback final : public ThreadCallback, ReferenceCounted<CompletionCallback<T>> {
 	// The thread future being waited on
 	ThreadFuture<T> threadFuture;
 
@@ -534,7 +554,7 @@ Future<T> unsafeThreadFutureToFuture(ThreadFuture<T> threadFuture) {
 
 // A callback waiting on a thread future and will delete itself once fired
 template <class T>
-struct UtilCallback : public ThreadCallback {
+struct UtilCallback final : public ThreadCallback {
 public:
 	UtilCallback(ThreadFuture<T> f, void* userdata) : f(f), userdata(userdata) {}
 
@@ -554,7 +574,7 @@ private:
 	void* userdata;
 };
 
-// The underlying actor that converts ThreadFuture from Future
+// The underlying actor that converts ThreadFuture to Future
 // Note: should be used from main thread
 // The cancellation here works both way
 // If the underlying "threadFuture" is cancelled, this actor will get actor_cancelled.
@@ -582,6 +602,9 @@ Future<T> safeThreadFutureToFuture(ThreadFuture<T> threadFuture) {
 	return threadFuture.get();
 }
 
+// Helper actor. Do not use directly!
+namespace internal_thread_helper {
+
 ACTOR template <class R, class F>
 Future<Void> doOnMainThread(Future<Void> signal, F f, ThreadSingleAssignmentVar<R>* result) {
 	try {
@@ -600,26 +623,24 @@ Future<Void> doOnMainThread(Future<Void> signal, F f, ThreadSingleAssignmentVar<
 	return Void();
 }
 
-ACTOR template <class F>
-void doOnMainThreadVoid(Future<Void> signal, F f, Error* err) {
-	wait(signal);
-	if (err && err->code() != invalid_error_code)
-		return;
-	try {
-		f();
-	} catch (Error& e) {
-		if (err)
-			*err = e;
-	}
-}
+}  // namespace internal_thread_helper
 
+// `onMainThread` runs a functor returning a `Future` on the main thread, waits for the future, and sends either the
+// value returned from the waited `Future` or an error through the `ThreadFuture` returned from the function call.
+//
+// A workaround for cases where your functor returns a non-`Future` value is to wrap the value in an immediately
+// filled `Future`. In cases where the functor returns void, a workaround is to return a `Future<bool>(true)` that
+// can be waited on.
+//
+// TODO: Add SFINAE overloads for functors returning void or a non-Future type.
 template <class F>
 ThreadFuture<decltype(std::declval<F>()().getValue())> onMainThread(F f) {
 	Promise<Void> signal;
 	auto returnValue = new ThreadSingleAssignmentVar<decltype(std::declval<F>()().getValue())>();
 	returnValue->addref(); // For the ThreadFuture we return
-	Future<Void> cancelFuture =
-	    doOnMainThread<decltype(std::declval<F>()().getValue()), F>(signal.getFuture(), f, returnValue);
+	// TODO: Is this cancellation logic actually needed?
+	Future<Void> cancelFuture = internal_thread_helper::doOnMainThread<decltype(std::declval<F>()().getValue()), F>(
+	    signal.getFuture(), f, returnValue);
 	returnValue->setCancel(std::move(cancelFuture));
 	g_network->onMainThread(std::move(signal), TaskPriority::DefaultOnMainThread);
 	return ThreadFuture<decltype(std::declval<F>()().getValue())>(returnValue);

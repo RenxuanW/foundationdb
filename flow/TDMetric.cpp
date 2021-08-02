@@ -144,7 +144,7 @@ void TDMetricCollection::checkRoll(uint64_t t, int64_t usedBytes) {
 }
 
 DynamicEventMetric::DynamicEventMetric(MetricNameRef const& name, Void)
-  : BaseEventMetric(name), newFields(false), latestRecorded(false) {}
+  : BaseEventMetric(name), latestRecorded(false), newFields(false) {}
 
 uint64_t DynamicEventMetric::log(uint64_t explicitTime) {
 	if (!enabled)
@@ -198,7 +198,7 @@ void DynamicEventMetric::flushData(MetricKeyRef const& mk, uint64_t rollTime, Me
 	for (auto& [name, field] : fields)
 		field->flushField(mk, rollTime, batch);
 	if (!latestRecorded) {
-		batch.updates.push_back(std::make_pair(mk.packLatestKey(), StringRef()));
+		batch.updates.emplace_back(mk.packLatestKey(), StringRef());
 		latestRecorded = true;
 	}
 }

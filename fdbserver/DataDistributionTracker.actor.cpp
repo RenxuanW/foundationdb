@@ -123,10 +123,10 @@ struct DataDistributionTracker {
 	                        Reference<AsyncVar<bool>> anyZeroHealthyTeams,
 	                        KeyRangeMap<ShardTrackedData>& shards,
 	                        bool& trackerCancelled)
-	  : cx(cx), distributorId(distributorId), dbSizeEstimate(new AsyncVar<int64_t>()), systemSizeEstimate(0),
-	    maxShardSize(new AsyncVar<Optional<int64_t>>()), sizeChanges(false), readyToStart(readyToStart), output(output),
-	    shardsAffectedByTeamFailure(shardsAffectedByTeamFailure), anyZeroHealthyTeams(anyZeroHealthyTeams),
-	    shards(shards), trackerCancelled(trackerCancelled) {}
+	  : cx(cx), distributorId(distributorId), shards(shards), sizeChanges(false), systemSizeEstimate(0),
+	    dbSizeEstimate(new AsyncVar<int64_t>()), maxShardSize(new AsyncVar<Optional<int64_t>>()), output(output),
+	    shardsAffectedByTeamFailure(shardsAffectedByTeamFailure), readyToStart(readyToStart),
+	    anyZeroHealthyTeams(anyZeroHealthyTeams), trackerCancelled(trackerCancelled) {}
 
 	~DataDistributionTracker() {
 		trackerCancelled = true;
@@ -176,8 +176,8 @@ ShardSizeBounds getShardSizeBounds(KeyRangeRef shard, int64_t maxShardSize) {
 }
 
 int64_t getMaxShardSize(double dbSizeEstimate) {
-	return std::min((SERVER_KNOBS->MIN_SHARD_BYTES +
-	                 (int64_t)std::sqrt(dbSizeEstimate) * SERVER_KNOBS->SHARD_BYTES_PER_SQRT_BYTES) *
+	return std::min((SERVER_KNOBS->MIN_SHARD_BYTES + (int64_t)std::sqrt(std::max<double>(dbSizeEstimate, 0)) *
+	                                                     SERVER_KNOBS->SHARD_BYTES_PER_SQRT_BYTES) *
 	                    SERVER_KNOBS->SHARD_BYTES_RATIO,
 	                (int64_t)SERVER_KNOBS->MAX_SHARD_BYTES);
 }

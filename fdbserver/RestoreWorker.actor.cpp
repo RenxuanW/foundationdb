@@ -189,7 +189,7 @@ ACTOR Future<Void> monitorWorkerLiveness(Reference<RestoreWorkerData> self) {
 	loop {
 		std::vector<std::pair<UID, RestoreSimpleRequest>> requests;
 		for (auto& worker : self->workerInterfaces) {
-			requests.push_back(std::make_pair(worker.first, RestoreSimpleRequest()));
+			requests.emplace_back(worker.first, RestoreSimpleRequest());
 		}
 		wait(sendBatchRequests(&RestoreWorkerInterface::heartbeat, self->workerInterfaces, requests));
 		wait(delay(60.0));
@@ -277,7 +277,7 @@ ACTOR static Future<Void> waitOnRestoreRequests(Database cx, UID nodeID = UID())
 	state Optional<Value> numRequests;
 
 	// wait for the restoreRequestTriggerKey to be set by the client/test workload
-	TraceEvent("FastRestoreWaitOnRestoreRequest", nodeID);
+	TraceEvent("FastRestoreWaitOnRestoreRequest", nodeID).log();
 	loop {
 		try {
 			tr.reset();
@@ -288,9 +288,9 @@ ACTOR static Future<Void> waitOnRestoreRequests(Database cx, UID nodeID = UID())
 			if (!numRequests.present()) {
 				state Future<Void> watchForRestoreRequest = tr.watch(restoreRequestTriggerKey);
 				wait(tr.commit());
-				TraceEvent(SevInfo, "FastRestoreWaitOnRestoreRequestTriggerKey", nodeID);
+				TraceEvent(SevInfo, "FastRestoreWaitOnRestoreRequestTriggerKey", nodeID).log();
 				wait(watchForRestoreRequest);
-				TraceEvent(SevInfo, "FastRestoreDetectRestoreRequestTriggerKeyChanged", nodeID);
+				TraceEvent(SevInfo, "FastRestoreDetectRestoreRequestTriggerKeyChanged", nodeID).log();
 			} else {
 				TraceEvent(SevInfo, "FastRestoreRestoreRequestTriggerKey", nodeID)
 				    .detail("TriggerKey", numRequests.get().toString());
@@ -410,7 +410,7 @@ ACTOR Future<Void> restoreWorker(Reference<ClusterConnectionFile> connFile,
                                  LocalityData locality,
                                  std::string coordFolder) {
 	try {
-		Database cx = Database::createDatabase(connFile, Database::API_VERSION_LATEST, true, locality);
+		Database cx = Database::createDatabase(connFile, Database::API_VERSION_LATEST, IsInternal::True, locality);
 		wait(reportErrors(_restoreWorker(cx, locality), "RestoreWorker"));
 	} catch (Error& e) {
 		TraceEvent("FastRestoreWorker").detail("Error", e.what());
