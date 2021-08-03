@@ -59,33 +59,6 @@ Future<Void> PipelinedReader::getNext(Database cx) {
 	return getNext_impl(this, cx);
 }
 
-ACTOR Future<RangeResultBlock> getRange(Transaction* tr, PipelinedReader* self, uint8_t hash, Key prefix, KeySelector begin, KeySelector end, GetRangeLimits limits) {
-	tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-	tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-	// std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
-	RangeResult rangevalue = wait(tr->getRange(begin, end, limits));
-	// However, in line 46 and 50, `begin` and `end` are the same, which means tr->getRange() doesn't pollute them.
-	// Then how is that possiblt that `self->hash` is suddenly changed at line 50, and self->prefix.printable() even causes a seg fault???
-	// std::cout << "litian 5 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
-	if (rangevalue.size() != 0) {
-		// std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << self->prefix.printable() << " " << rangevalue.size() << std::endl;
-		return RangeResultBlock{ .result = rangevalue,
-									.firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
-									.lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
-									.hash = hash,
-									.indexToRead = 0 };
-
-	} else {
-		// std::cout << "litian 5 " << (int)hash << " " << (int)self->hash << " " << self->prefix.printable() << std::endl;
-		return RangeResultBlock{ .result = RangeResult(),
-									.firstVersion = -1,
-									.lastVersion = -1,
-									.hash = hash,
-									.indexToRead = 0 };
-	}
-}
-
-
 ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database cx) {
 	state Transaction tr(cx);
 
@@ -120,26 +93,27 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			Key beginKey = versionToKey(p.lastVersion + 1, prefix), endKey = versionToKey(endVersion, prefix);
 			KeySelector begin = firstGreaterOrEqual(beginKey), end = firstGreaterOrEqual(endKey);
 
-			previousResult = getRange(&tr, self, hash, prefix, begin, end, limits);
+			// previousResult = getRange(&tr, self, hash, prefix, begin, end, limits);
+			tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 
-			// previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
-			// 	if (rangevalue.size() != 0) {
-			// 		std::cout << "litian 4 " << (int)hash << " " << rangevalue.size() << std::endl;
-			// 		return RangeResultBlock{ .result = rangevalue,
-			// 			                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
-			// 			                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
-			// 			                     .hash = hash,
-			// 			                     .indexToRead = 0 };
+			previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
+				if (rangevalue.size() != 0) {
+					// std::cout << "litian 4 " << (int)hash << " " << rangevalue.size() << std::endl;
+					return RangeResultBlock{ .result = rangevalue,
+						                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
+						                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
+						                     .hash = hash,
+						                     .indexToRead = 0 };
 
-			// 	} else {
-			// 		std::cout << "litian 5 " << (int)hash << " " << prefix.printable() << " "  << std::endl;
-			// 		return RangeResultBlock{ .result = RangeResult(),
-			// 			                     .firstVersion = -1,
-			// 			                     .lastVersion = -1,
-			// 			                     .hash = hash,
-			// 			                     .indexToRead = 0 };
-			// 	}
-			// });
+				} else {
+					return RangeResultBlock{ .result = RangeResult(),
+						                     .firstVersion = -1,
+						                     .lastVersion = -1,
+						                     .hash = hash,
+						                     .indexToRead = 0 };
+				}
+			});
 			self->reads.push_back(previousResult);
 		} catch (Error& e) {
 			if (e.code() == error_code_transaction_too_old) {
