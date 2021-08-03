@@ -37,7 +37,7 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 	Version endVersion;
 	Key uid;
 	Key baLogRangePrefix;
-	bool debug = true;
+	bool debug = false;
 
 	Version recordVersion(int index) {
 		return beginVersion + versionIncrement * index;
@@ -58,8 +58,8 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 		baLogRangePrefix = uid.withPrefix(backupLogKeys.begin);
 
 		beginVersion = 0;
-		records = 1;
-		versionRange = 1e6;
+		records = 1000;
+		versionRange = 500e6;
 		versionIncrement = versionRange / records;
 
 		// The version immediately after the last actual record version
@@ -70,7 +70,6 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 
 	Future<Void> start(Database const& cx) override {
         if (enabled) {
-            std::cout << "litian mmm " << baLogRangePrefix.printable() << std::endl;
             return _start(cx, this); 
         }
 		return Void();    
@@ -97,7 +96,7 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 						tr.set(key, value);
 
 						if(self->debug) {
-							printf("Insert version %12" PRId64 " (%" PRIx64 ")  key '%s'  value '%s'\n", version, version, key.toHexString().c_str(), value.toString().c_str());
+							printf("Insert version %12" PRId64 " (%" PRIx64 ")  key '%s'  value '%s'\n", version, version, key.printable().c_str(), value.toString().c_str());
 						}
 					}
 
@@ -123,17 +122,19 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 				Key expectedKey = self->recordKey(nextExpectedRecord);
 				Value expectedValue = self->recordValue(nextExpectedRecord);
 	
-				bool keyMatch = rec.key != expectedKey;
-				bool valueMatch = rec.value != expectedValue;
+				bool keyMatch = rec.key == expectedKey;
+				bool valueMatch = rec.value == expectedValue;
 
-				printf("key:            %s\n", rec.key.toHexString().c_str());
-				if(!keyMatch) {
-					printf("expected key:   %s\n", expectedKey.toHexString().c_str());
-				}
-				printf("value:          %s\n", rec.value.toHexString().c_str());
-				if(!valueMatch) {
-					printf("expected value: %s\n", expectedValue.toHexString().c_str());
-				}
+                if(self->debug) {
+                    printf("key:            %s\n", rec.key.toHexString().c_str());
+                    if(!keyMatch) {
+                        printf("expected key:   %s\n", expectedKey.toHexString().c_str());
+                    }
+                    printf("value:          %s\n", rec.value.toHexString().c_str());
+                    if(!valueMatch) {
+                        printf("expected value: %s\n", expectedValue.toHexString().c_str());
+                    }
+                }
 
 				ASSERT(keyMatch);
 				ASSERT(valueMatch);

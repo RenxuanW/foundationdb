@@ -36,10 +36,10 @@ Version keyRefToVersion(Key key, Key prefix) {
 
 Standalone<RangeResultRef> RangeResultBlock::consume(Key prefix) {
 	Version stopVersion =
-		std::min(lastVersion + 1,
+		std::min(lastVersion,
 					(firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
-						CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE); // firstVersion rounded up to the nearest 1M versions
-	std::cout << "litian 9 " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
+						CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE) + 1; // firstVersion rounded up to the nearest 1M versions, then + 1
+	// std::cout << "litian 9 " << (int)hash << " " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
 	int startIndex = indexToRead;
 	while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
 		++indexToRead;
@@ -62,11 +62,11 @@ Future<Void> PipelinedReader::getNext(Database cx) {
 ACTOR Future<RangeResultBlock> getRange(Transaction* tr, PipelinedReader* self, uint8_t hash, Key prefix, KeySelector begin, KeySelector end, GetRangeLimits limits) {
 	tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 	tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-	std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
+	// std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
 	RangeResult rangevalue = wait(tr->getRange(begin, end, limits));
 	// However, in line 46 and 50, `begin` and `end` are the same, which means tr->getRange() doesn't pollute them.
 	// Then how is that possiblt that `self->hash` is suddenly changed at line 50, and self->prefix.printable() even causes a seg fault???
-	std::cout << "litian 5 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
+	// std::cout << "litian 5 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
 	if (rangevalue.size() != 0) {
 		// std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << self->prefix.printable() << " " << rangevalue.size() << std::endl;
 		return RangeResultBlock{ .result = rangevalue,
@@ -113,7 +113,6 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			// std::cout << "litian 7 " << (int)hash << " " << (int)self->hash << " " << self->endVersion << " " << self->prefix.printable() << std::endl;
 			RangeResultBlock p = wait(previousResult);
 
-			// std::cout << "litian 7 " << (int)hash << " " << (int)self->hash << " " << p.firstVersion << " " << self->endVersion << " " << self->prefix.printable() << std::endl;
 			if (p.firstVersion == -1) {
 				return Void();
 			}
@@ -121,15 +120,6 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			Key beginKey = versionToKey(p.lastVersion + 1, prefix), endKey = versionToKey(endVersion, prefix);
 			KeySelector begin = firstGreaterOrEqual(beginKey), end = firstGreaterOrEqual(endKey);
 
-			// At first I thought it could be the lambda doing capture that pollutes the memory of `self`,
-			// so I change the lambda to an ACTOR function getRange, but the behavior didn't change at all.
-			// The problem doesn't exist when I assign a trivial RangeResultBlock to previousResult as below,
-			// so it's obvious that the bug exists in `getRange()`.
-			// previousResult = RangeResultBlock{ .result = RangeResult(),
-			// 									.firstVersion = -1,
-			// 									.lastVersion = -1,
-			// 									.hash = hash,
-			// 									.indexToRead = 0 };
 			previousResult = getRange(&tr, self, hash, prefix, begin, end, limits);
 
 			// previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
@@ -194,7 +184,7 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 
 	state Standalone<RangeResultRef> ret = top.consume(prefix);
 
-	std::cout << "litian aaa " << (int)hash << " " << ret.size() << std::endl;
+	// std::cout << "litian aaa " << (int)hash << " " << ret.size() << std::endl;
 	if (top.empty()) {
 		self->pipelinedReaders[(int)hash].reads.pop_front();
 		self->pipelinedReaders[(int)hash].trigger();
