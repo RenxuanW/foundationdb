@@ -24,6 +24,8 @@
 #include "flow/flow.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
 
+#define PRINT_HASH 46
+
 Key versionToKey(Version version, Key prefix) {
 	uint64_t versionBigEndian = bigEndian64(version);
 	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
@@ -59,33 +61,6 @@ Future<Void> PipelinedReader::getNext(Database cx) {
 	return getNext_impl(this, cx);
 }
 
-ACTOR Future<RangeResultBlock> getRange(Transaction* tr, PipelinedReader* self, uint8_t hash, Key prefix, KeySelector begin, KeySelector end, GetRangeLimits limits) {
-	tr->setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-	tr->setOption(FDBTransactionOptions::LOCK_AWARE);
-	// std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
-	RangeResult rangevalue = wait(tr->getRange(begin, end, limits));
-	// However, in line 46 and 50, `begin` and `end` are the same, which means tr->getRange() doesn't pollute them.
-	// Then how is that possiblt that `self->hash` is suddenly changed at line 50, and self->prefix.printable() even causes a seg fault???
-	// std::cout << "litian 5 " << (int)hash << " " << (int)self->hash << " " << begin.toString() << " " << end.toString()  << " " << self->prefix.printable()<< std::endl;
-	if (rangevalue.size() != 0) {
-		// std::cout << "litian 4 " << (int)hash << " " << (int)self->hash << " " << self->prefix.printable() << " " << rangevalue.size() << std::endl;
-		return RangeResultBlock{ .result = rangevalue,
-									.firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
-									.lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
-									.hash = hash,
-									.indexToRead = 0 };
-
-	} else {
-		// std::cout << "litian 5 " << (int)hash << " " << (int)self->hash << " " << self->prefix.printable() << std::endl;
-		return RangeResultBlock{ .result = RangeResult(),
-									.firstVersion = -1,
-									.lastVersion = -1,
-									.hash = hash,
-									.indexToRead = 0 };
-	}
-}
-
-
 ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database cx) {
 	state Transaction tr(cx);
 
@@ -113,6 +88,11 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			// std::cout << "litian 7 " << (int)hash << " " << (int)self->hash << " " << self->endVersion << " " << self->prefix.printable() << std::endl;
 			RangeResultBlock p = wait(previousResult);
 
+			if (hash == PRINT_HASH) {
+				// -1 is never printed here
+				std::cout << "litian 7 " << p.firstVersion << std::endl;
+			}
+
 			if (p.firstVersion == -1) {
 				return Void();
 			}
@@ -120,27 +100,35 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			Key beginKey = versionToKey(p.lastVersion + 1, prefix), endKey = versionToKey(endVersion, prefix);
 			KeySelector begin = firstGreaterOrEqual(beginKey), end = firstGreaterOrEqual(endKey);
 
-			previousResult = getRange(&tr, self, hash, prefix, begin, end, limits);
+			// previousResult = getRange(&tr, self, hash, prefix, begin, end, limits);
+			tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+			tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 
-			// previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
-			// 	if (rangevalue.size() != 0) {
-			// 		std::cout << "litian 4 " << (int)hash << " " << rangevalue.size() << std::endl;
-			// 		return RangeResultBlock{ .result = rangevalue,
-			// 			                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
-			// 			                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
-			// 			                     .hash = hash,
-			// 			                     .indexToRead = 0 };
+			previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
+				if (rangevalue.size() != 0) {
+					// std::cout << "litian 4 " << (int)hash << " " << rangevalue.size() << std::endl;
+					return RangeResultBlock{ .result = rangevalue,
+						                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
+						                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
+						                     .hash = hash,
+						                     .indexToRead = 0 };
 
-			// 	} else {
-			// 		std::cout << "litian 5 " << (int)hash << " " << prefix.printable() << " "  << std::endl;
-			// 		return RangeResultBlock{ .result = RangeResult(),
-			// 			                     .firstVersion = -1,
-			// 			                     .lastVersion = -1,
-			// 			                     .hash = hash,
-			// 			                     .indexToRead = 0 };
-			// 	}
-			// });
+				} else {
+					if (hash == PRINT_HASH) {
+						// This line is printed, meaning we have reached the end.
+					    std::cout << "litian 5 " << (int)hash << " " << prefix.printable() << " "  << std::endl;
+					}
+					return RangeResultBlock{ .result = RangeResult(),
+						                     .firstVersion = -1,
+						                     .lastVersion = -1,
+						                     .hash = hash,
+						                     .indexToRead = 0 };
+				}
+			});
 			self->reads.push_back(previousResult);
+			if (hash == PRINT_HASH) {
+				std::cout << "litian 8 " << (int)hash << std::endl;
+			}
 		} catch (Error& e) {
 			// The whole loop is only executed once for every getNext() call. Also, e.code() = 1101 below, which is "Asynchronous operation cancelled". 
 			// Does this provide some clue?
@@ -179,7 +167,7 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 	}
 	RangeResultBlock top = self->priorityQueue.top();
 	self->priorityQueue.pop();
-	uint8_t hash = top.hash;
+	state uint8_t hash = top.hash;
 	Key prefix = self->pipelinedReaders[(int)hash].prefix;
 
 	state Standalone<RangeResultRef> ret = top.consume(prefix);
@@ -190,6 +178,11 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 		self->pipelinedReaders[(int)hash].trigger();
 		if (!self->pipelinedReaders[(int)hash].reads.empty()) {
 			RangeResultBlock next = wait(self->pipelinedReaders[(int)hash].reads.front());
+			if(hash == PRINT_HASH) {
+				// -1 is printed here
+				std::cout << "litian 9 " << next.firstVersion << std::endl;
+			}
+
 			self->priorityQueue.push(next);
 		} else {
 			++self->finished;
