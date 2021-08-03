@@ -19,12 +19,14 @@
  */
 
 #include <cstdint>
+#include <limits>
 #include "fdbrpc/simulator.h"
 #include "fdbclient/BackupAgent.actor.h"
 #include "fdbclient/BackupContainer.h"
 #include "fdbclient/MutationLogReader.actor.h"
 #include "fdbserver/workloads/workloads.actor.h"
 #include "flow/Error.h"
+#include "flow/IRandom.h"
 #include "flow/flow.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
 
@@ -57,9 +59,9 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 		uid = BinaryWriter::toValue(deterministicRandom()->randomUniqueID(), Unversioned()); // StringRef(std::string("uid"));
 		baLogRangePrefix = uid.withPrefix(backupLogKeys.begin);
 
-		beginVersion = 0;
-		records = 1000;
-		versionRange = 500e6;
+		beginVersion = deterministicRandom()->randomInt64(0, std::numeric_limits<int32_t>::max());  // intentionally not max of int64
+		records = deterministicRandom()->randomInt(0, 1e6);
+		versionRange = deterministicRandom()->randomInt64(records, std::numeric_limits<Version>::max());
 		versionIncrement = versionRange / records;
 
 		// The version immediately after the last actual record version
