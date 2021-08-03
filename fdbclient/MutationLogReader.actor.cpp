@@ -142,10 +142,6 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 			// });
 			self->reads.push_back(previousResult);
 		} catch (Error& e) {
-			// The whole loop is only executed once for every getNext() call. Also, e.code() = 1101 below, which is "Asynchronous operation cancelled". 
-			// Does this provide some clue?
-			std::cout << "litian 6 " << (int)self->hash << " " << e.code() << std::endl;
-
 			if (e.code() == error_code_transaction_too_old) {
 				// We are using this transaction until it's too old and then resetting to a fresh one,
 				// so we don't need to delay.
@@ -179,7 +175,7 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 	}
 	RangeResultBlock top = self->priorityQueue.top();
 	self->priorityQueue.pop();
-	uint8_t hash = top.hash;
+	state uint8_t hash = top.hash;
 	Key prefix = self->pipelinedReaders[(int)hash].prefix;
 
 	state Standalone<RangeResultRef> ret = top.consume(prefix);
@@ -197,6 +193,16 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 	} else {
 		self->priorityQueue.push(top);
 	}
+
+	if(self->finished == 256) {
+		state int i;
+		for(i = 0; i < self->pipelinedReaders.size(); ++i) {
+			wait(self->pipelinedReaders[i].done());
+		}
+
+		throw end_of_stream();
+	}
+
 	return ret;
 }
 

@@ -2050,11 +2050,6 @@ struct BackupLogRangeTaskFunc : BackupTaskFuncBase {
 
 		try {
 			loop {
-				// std::cout << "litian ooo" << std::endl;
-				if (reader->isFinished()) {
-					break;
-				}
-
 				state Standalone<RangeResultRef> nextResultSet =
 				    wait(reader->getNext()); // or whatever the function is called
 

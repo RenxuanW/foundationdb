@@ -114,35 +114,36 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 
 		state int nextExpectedRecord = 0;
 
-		loop {
-			state Standalone<RangeResultRef> results = wait(reader->getNext());
-			printf("results: %d records\n", results.size());
+		try {
+			loop {
+				state Standalone<RangeResultRef> results = wait(reader->getNext());
 
-			for(const auto &rec : results) {
-				Key expectedKey = self->recordKey(nextExpectedRecord);
-				Value expectedValue = self->recordValue(nextExpectedRecord);
-	
-				bool keyMatch = rec.key == expectedKey;
-				bool valueMatch = rec.value == expectedValue;
+				for(const auto &rec : results) {
+					Key expectedKey = self->recordKey(nextExpectedRecord);
+					Value expectedValue = self->recordValue(nextExpectedRecord);
+		
+					bool keyMatch = rec.key == expectedKey;
+					bool valueMatch = rec.value == expectedValue;
 
-                if(self->debug) {
-                    printf("key:            %s\n", rec.key.toHexString().c_str());
-                    if(!keyMatch) {
-                        printf("expected key:   %s\n", expectedKey.toHexString().c_str());
-                    }
-                    printf("value:          %s\n", rec.value.toHexString().c_str());
-                    if(!valueMatch) {
-                        printf("expected value: %s\n", expectedValue.toHexString().c_str());
-                    }
-                }
+					if(self->debug) {
+						printf("key:            %s\n", rec.key.toHexString().c_str());
+						if(!keyMatch) {
+							printf("expected key:   %s\n", expectedKey.toHexString().c_str());
+						}
+						printf("value:          %s\n", rec.value.toHexString().c_str());
+						if(!valueMatch) {
+							printf("expected value: %s\n", expectedValue.toHexString().c_str());
+						}
+					}
 
-				ASSERT(keyMatch);
-				ASSERT(valueMatch);
-				++nextExpectedRecord;
+					ASSERT(keyMatch);
+					ASSERT(valueMatch);
+					++nextExpectedRecord;
+				}
 			}
-
-			if (reader->isFinished()) {
-				break;
+		} catch(Error &e) {
+			if(e.code() != error_code_end_of_stream) {
+				throw e;
 			}
 		}
 

@@ -86,10 +86,13 @@ public:
 		return format("{ PipelinedReader hash=%u (%x) }", hash, hash);
 	}
 
+	Future<Void> done() {
+		return reader;
+	}
+
 private:
 	Version beginVersion, endVersion, currentBeginVersion;
 	int pipelineDepth;
-	// bool finished = false;
 	AsyncTrigger t;
 	Future<Void> reader;
 };
@@ -129,8 +132,6 @@ public:
 	// Should always call isFinished() before calling getNext.
 	Future<Standalone<RangeResultRef>> getNext();
 	ACTOR static Future<Standalone<RangeResultRef>> getNext_impl(MutationLogReader* self);
-
-	bool isFinished() { return finished == 256; }
 
 	int pqSize() { return priorityQueue.size(); }
 
