@@ -78,16 +78,18 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 
 	loop {
 		try {
-			if (self->reads.size() > self->pipelineDepth) {
-				std::cout << "litian 1 " << (int)hash << " " << std::endl;
-				wait(self->t.onTrigger());
-			}
+			wait(self->readerLimit.take());
 
 			// std::cout << "litian 7 " << (int)hash << " " << (int)self->hash << " " << self->endVersion << " " << self->prefix.printable() << std::endl;
 			RangeResultBlock p = wait(previousResult);
+			printf("Result size: %d %d\n", self->hash, p.result.size());
 
 			if (p.firstVersion == -1) {
+				self->reads.sendError(end_of_stream());
 				return Void();
+			}
+			else {
+				self->reads.send(p);
 			}
 
 			Key beginKey = versionToKey(p.lastVersion + 1, prefix), endKey = versionToKey(endVersion, prefix);
@@ -114,7 +116,6 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 						                     .indexToRead = 0 };
 				}
 			});
-			self->reads.push_back(previousResult);
 		} catch (Error& e) {
 			if (e.code() == error_code_transaction_too_old) {
 				// We are using this transaction until it's too old and then resetting to a fresh one,
@@ -131,7 +132,7 @@ ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
 	state int h;
 	for (h = 0; h < 256; ++h) {
 		// std::cout << "litian 2 " << h << " " << self->pipelinedReaders[h].reads.size() << std::endl;
-		RangeResultBlock front = wait(self->pipelinedReaders[h].reads.front());
+		RangeResultBlock front = waitNext(self->pipelinedReaders[h]->reads.getFuture());
 		// std::cout << "litian 2.5 " << (int)front.hash << " " << front.firstVersion << " " << front.lastVersion << " "
 		// << front.indexToRead << std::endl;
 		self->priorityQueue.push(front);
@@ -150,19 +151,23 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 	RangeResultBlock top = self->priorityQueue.top();
 	self->priorityQueue.pop();
 	state uint8_t hash = top.hash;
-	Key prefix = self->pipelinedReaders[(int)hash].prefix;
+	Key prefix = self->pipelinedReaders[(int)hash]->prefix;
 
 	state Standalone<RangeResultRef> ret = top.consume(prefix);
 
 	// std::cout << "litian aaa " << (int)hash << " " << ret.size() << std::endl;
 	if (top.empty()) {
-		self->pipelinedReaders[(int)hash].reads.pop_front();
-		self->pipelinedReaders[(int)hash].trigger();
-		if (!self->pipelinedReaders[(int)hash].reads.empty()) {
-			RangeResultBlock next = wait(self->pipelinedReaders[(int)hash].reads.front());
+		self->pipelinedReaders[(int)hash]->release();
+		try {
+			RangeResultBlock next = waitNext(self->pipelinedReaders[(int)hash]->reads.getFuture());
 			self->priorityQueue.push(next);
-		} else {
-			++self->finished;
+		} catch(Error &e) {
+			if(e.code() == error_code_end_of_stream) {
+				++self->finished;
+			}
+			else {
+				throw e;
+			}
 		}
 	} else {
 		self->priorityQueue.push(top);
@@ -171,7 +176,7 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 	if(self->finished == 256) {
 		state int i;
 		for(i = 0; i < self->pipelinedReaders.size(); ++i) {
-			wait(self->pipelinedReaders[i].done());
+			wait(self->pipelinedReaders[i]->done());
 		}
 
 		throw end_of_stream();

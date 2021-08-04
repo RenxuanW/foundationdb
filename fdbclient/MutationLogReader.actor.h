@@ -57,7 +57,7 @@ struct RangeResultBlock {
 class PipelinedReader {
 public:
 	PipelinedReader(uint8_t h, Version bv, Version ev, int pd, Key p)
-	  : hash(h), prefix(StringRef(&hash, sizeof(uint8_t)).withPrefix(p)), beginVersion(bv), endVersion(ev), currentBeginVersion(bv), pipelineDepth(pd) {}
+	  : readerLimit(pd), hash(h), prefix(StringRef(&hash, sizeof(uint8_t)).withPrefix(p)), beginVersion(bv), endVersion(ev), currentBeginVersion(bv), pipelineDepth(pd) {}
     // {
 	//     hash = h;
 	// 	beginVersion = currentBeginVersion = bv;
@@ -66,19 +66,16 @@ public:
 	// 	prefix = StringRef(&h, sizeof(uint8_t)).withPrefix(p);
 	// }
 
-	// ~PipelinedReader() {
-	// 	printf("~PipelinedReader(this=%s\n)", toString().c_str());
-	// }
-
 	void startReading(Database cx);
 	Future<Void> getNext(Database cx);
 	ACTOR static Future<Void> getNext_impl(PipelinedReader* self, Database cx);
 
-	void trigger() { t.trigger(); }
+	void release() { readerLimit.release(); }
 
 	// bool isFinished() { return finished; }
 
-	std::deque<Future<RangeResultBlock>> reads;
+	PromiseStream<RangeResultBlock> reads;
+	FlowLock readerLimit;
 	uint8_t hash;
 	Key prefix; // "\xff\x02/alog/UID/hash/" for restore, or "\xff\x02/blog/UID/hash/" for backup
 
@@ -93,7 +90,6 @@ public:
 private:
 	Version beginVersion, endVersion, currentBeginVersion;
 	int pipelineDepth;
-	AsyncTrigger t;
 	Future<Void> reader;
 };
 
@@ -109,8 +105,8 @@ public:
 		pipelinedReaders.reserve(256);
 		if (pipelineDepth > 0) {
 			for (int h = 0; h < 256; ++h) {
-				pipelinedReaders.emplace_back((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix);
-				pipelinedReaders[h].startReading(cx);
+				pipelinedReaders.emplace_back(new PipelinedReader((uint8_t)h, beginVersion, endVersion, pipelineDepth, prefix));
+				pipelinedReaders[h]->startReading(cx);
 			}
 		}
 	}
@@ -136,7 +132,7 @@ public:
 	int pqSize() { return priorityQueue.size(); }
 
 private:
-	std::vector<PipelinedReader> pipelinedReaders;
+	std::vector<std::unique_ptr<PipelinedReader>> pipelinedReaders;
 	std::priority_queue<RangeResultBlock> priorityQueue;
 	Version beginVersion, endVersion;
 	Key prefix; // "\xff\x02/alog/UID/" for restore, or "\xff\x02/blog/UID/" for backup

@@ -81,6 +81,7 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 		state Transaction tr(cx);
 		state int iStart = 0;
 		state int batchSize = 1000;
+		printf("Records: %d\n", self->records);
 
 		while(iStart < self->records) {
 			loop {
