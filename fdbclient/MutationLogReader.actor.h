@@ -76,8 +76,6 @@ public:
 
 	void trigger() { t.trigger(); }
 
-	// bool isFinished() { return finished; }
-
 	std::deque<Future<RangeResultBlock>> reads;
 	uint8_t hash;
 	Key prefix; // "\xff\x02/alog/UID/hash/" for restore, or "\xff\x02/blog/UID/hash/" for backup
