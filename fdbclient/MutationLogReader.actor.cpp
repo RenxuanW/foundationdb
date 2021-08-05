@@ -67,62 +67,54 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	                                ? CLIENT_KNOBS->BACKUP_SIMULATED_LIMIT_BYTES
 	                                : CLIENT_KNOBS->BACKUP_GET_RANGE_LIMIT_BYTES);
 
-	state Future<RangeResultBlock> previousResult = RangeResultBlock{ .result = RangeResult(),
+	state RangeResultBlock previousResult = RangeResultBlock{ .result = RangeResult(),
 		                                                              .firstVersion = self->currentBeginVersion,
 		                                                              .lastVersion = self->currentBeginVersion - 1,
 		                                                              .hash = self->hash,
 		                                                              .indexToRead = 0 };
-	state uint8_t hash = self->hash;
-	state Key prefix = self->prefix;
-	state Version endVersion = self->endVersion;
+	state KeySelector end = firstGreaterOrEqual(versionToKey(self->endVersion, self->prefix));
 
 	loop {
-		try {
-			wait(self->readerLimit.take());
+		// Get the lock
+		wait(self->readerLimit.take());
 
-			// std::cout << "litian 7 " << (int)hash << " " << (int)self->hash << " " << self->endVersion << " " << self->prefix.printable() << std::endl;
-			RangeResultBlock p = wait(previousResult);
-			printf("Result size: %d %d\n", self->hash, p.result.size());
+		// Init read boundaries
+		state KeySelector begin = firstGreaterOrEqual(versionToKey(previousResult.lastVersion + 1, self->prefix));
 
-			if (p.firstVersion == -1) {
-				self->reads.sendError(end_of_stream());
-				return Void();
-			}
-			else {
-				self->reads.send(p);
-			}
+		// Read begin to end forever until successful
+		loop {
+			try {
+				tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
+				tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 
-			Key beginKey = versionToKey(p.lastVersion + 1, prefix), endKey = versionToKey(endVersion, prefix);
-			KeySelector begin = firstGreaterOrEqual(beginKey), end = firstGreaterOrEqual(endKey);
+				RangeResult rangevalue = wait(tr.getRange(begin, end, limits));
 
-			// previousResult = getRange(&tr, self, hash, prefix, begin, end, limits);
-			tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
-			tr.setOption(FDBTransactionOptions::LOCK_AWARE);
-
-			previousResult = map(tr.getRange(begin, end, limits), [=](RangeResult rangevalue) {
-				if (rangevalue.size() != 0) {
-					// std::cout << "litian 4 " << (int)hash << " " << rangevalue.size() << std::endl;
-					return RangeResultBlock{ .result = rangevalue,
-						                     .firstVersion = keyRefToVersion(rangevalue.front().key, prefix),
-						                     .lastVersion = keyRefToVersion(rangevalue.back().key, prefix),
-						                     .hash = hash,
-						                     .indexToRead = 0 };
-
-				} else {
-					return RangeResultBlock{ .result = RangeResult(),
-						                     .firstVersion = -1,
-						                     .lastVersion = -1,
-						                     .hash = hash,
-						                     .indexToRead = 0 };
+				// No more results, send end of stream
+				if (rangevalue.empty()) {
+					self->reads.sendError(end_of_stream());
+					return Void();
 				}
-			});
-		} catch (Error& e) {
-			if (e.code() == error_code_transaction_too_old) {
-				// We are using this transaction until it's too old and then resetting to a fresh one,
-				// so we don't need to delay.
-				tr.fullReset();
-			} else {
-				wait(tr.onError(e));
+				else {
+					// Got results, update previousResult
+					previousResult = RangeResultBlock{ .result = rangevalue,
+													.firstVersion = keyRefToVersion(rangevalue.front().key, self->prefix),
+													.lastVersion = keyRefToVersion(rangevalue.back().key, self->prefix),
+													.hash = self->hash,
+													.indexToRead = 0 };
+
+					// Send results to the reads stream
+					self->reads.send(previousResult);
+				}
+
+				break;
+			} catch (Error& e) {
+				if (e.code() == error_code_transaction_too_old) {
+					// We are using this transaction until it's too old and then resetting to a fresh one,
+					// so we don't need to delay.
+					tr.fullReset();
+				} else {
+					wait(tr.onError(e));
+				}
 			}
 		}
 	}

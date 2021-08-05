@@ -82,6 +82,8 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 		state int iStart = 0;
 		state int batchSize = 1000;
 		printf("Records: %d\n", self->records);
+		printf("BeginVersion: %" PRId64 "\n", self->beginVersion);
+		printf("EndVersion: %" PRId64 "\n", self->endVersion);
 
 		while(iStart < self->records) {
 			loop {
@@ -129,13 +131,13 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 					bool valueMatch = rec.value == expectedValue;
 
 					if(self->debug) {
-						printf("key:            %s\n", rec.key.toHexString().c_str());
+						printf("key:            %s\n", rec.key.printable().c_str());
 						if(!keyMatch) {
-							printf("expected key:   %s\n", expectedKey.toHexString().c_str());
+							printf("expected key:   %s\n", expectedKey.printable().c_str());
 						}
-						printf("value:          %s\n", rec.value.toHexString().c_str());
+						printf("value:          %s\n", rec.value.printable().c_str());
 						if(!valueMatch) {
-							printf("expected value: %s\n", expectedValue.toHexString().c_str());
+							printf("expected value: %s\n", expectedValue.printable().c_str());
 						}
 					}
 
@@ -150,9 +152,10 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 			}
 		}
 
-		printf("records:          %d\n", self->records);
-		printf("expected records: %d\n", nextExpectedRecord);
-		ASSERT(nextExpectedRecord == self->records);
+		printf("records expected: %d\n", self->records);
+		printf("records found:    %d\n", nextExpectedRecord);
+
+		ASSERT_EQ(nextExpectedRecord, self->records);
 
 		return Void();
 	}
