@@ -29,22 +29,21 @@ Key versionToKey(Version version, Key prefix) {
 	return KeyRef((uint8_t*)&versionBigEndian, sizeof(uint64_t)).withPrefix(prefix);
 }
 
-Version keyRefToVersion(Key key, Key prefix) {
-	Key keyWithoutPrefix = key.removePrefix(prefix);
-	return (Version)bigEndian64(*((uint64_t*)keyWithoutPrefix.begin()));
+Version keyRefToVersion(KeyRef key, int prefixLen) {
+	return (Version)bigEndian64(*((uint64_t*)key.substr(prefixLen).begin()));
 }
 
-Standalone<RangeResultRef> RangeResultBlock::consume(Key prefix) {
+Standalone<RangeResultRef> RangeResultBlock::consume() {
 	Version stopVersion =
 		std::min(lastVersion,
 					(firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
 						CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE) + 1; // firstVersion rounded up to the nearest 1M versions, then + 1
 	int startIndex = indexToRead;
-	while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
+	while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefixLen) < stopVersion) {
 		++indexToRead;
 	}
 	if (indexToRead < result.size()) {
-		firstVersion = keyRefToVersion(result[indexToRead].key, prefix); // the version of result[indexToRead]
+		firstVersion = keyRefToVersion(result[indexToRead].key, prefixLen); // the version of result[indexToRead]
 	}
 	return Standalone<RangeResultRef>(
 		RangeResultRef(result.slice(startIndex, indexToRead), result.more, result.readThrough), result.arena());
@@ -66,21 +65,12 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	                                ? CLIENT_KNOBS->BACKUP_SIMULATED_LIMIT_BYTES
 	                                : CLIENT_KNOBS->BACKUP_GET_RANGE_LIMIT_BYTES);
 
-	state RangeResultBlock previousResult = RangeResultBlock{ .result = RangeResult(),
-		                                                              .firstVersion = self->currentBeginVersion,
-		                                                              .lastVersion = self->currentBeginVersion - 1,
-		                                                              .hash = self->hash,
-		                                                              .indexToRead = 0 };
-	self->reads.send(previousResult);
-	wait(self->readerLimit.take());
+	state Key begin = versionToKey(self->currentBeginVersion, self->prefix);
 	state Key end = versionToKey(self->endVersion, self->prefix);
 
 	loop {
 		// Get the lock
 		wait(self->readerLimit.take());
-
-		// Init read boundaries
-		state Key begin = versionToKey(previousResult.lastVersion, self->prefix);
 
 		// Read begin to end forever until successful
 		loop {
@@ -88,24 +78,28 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 				tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 				tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 
-				RangeResult rangevalue = wait(tr.getRange(KeyRangeRef(keyAfter(begin), end), limits));
+				RangeResult kvs = wait(tr.getRange(KeyRangeRef(begin, end), limits));
 
 				// No more results, send end of stream
-				if (rangevalue.empty()) {
+				if (!kvs.empty()) {
+					// Send results to the reads stream
+					self->reads.send(RangeResultBlock{
+						.result = kvs,
+						.firstVersion = keyRefToVersion(kvs.front().key, self->prefix.size()),
+						.lastVersion = keyRefToVersion(kvs.back().key, self->prefix.size()),
+						.hash = self->hash,
+						.prefixLen = self->prefix.size(),
+						.indexToRead = 0
+					});
+				}
+
+				if(!kvs.more) {
 					self->reads.sendError(end_of_stream());
 					return Void();
 				}
-				else {
-					// Got results, update previousResult
-					previousResult = RangeResultBlock{ .result = rangevalue,
-													.firstVersion = keyRefToVersion(rangevalue.front().key, self->prefix),
-													.lastVersion = keyRefToVersion(rangevalue.back().key, self->prefix),
-													.hash = self->hash,
-													.indexToRead = 0 };
 
-					// Send results to the reads stream
-					self->reads.send(previousResult);
-				}
+				begin = kvs.readThrough.present() ? kvs.readThrough.get() : keyAfter(kvs.back().key);
+
 				break;
 			} catch (Error& e) {
 				if (e.code() == error_code_transaction_too_old) {
@@ -123,8 +117,15 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
 	state int h;
 	for (h = 0; h < 256; ++h) {
-		RangeResultBlock front = waitNext(self->pipelinedReaders[h]->reads.getFuture());
-		self->priorityQueue.push(front);
+		try {
+			RangeResultBlock front = waitNext(self->pipelinedReaders[h]->reads.getFuture());
+			self->priorityQueue.push(front);
+		} catch(Error &e) {
+			if(e.code() != error_code_end_of_stream) {
+				throw e;
+			}
+			++self->finished;
+		}
 	}
 	return Void();
 }
@@ -145,8 +146,7 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 		RangeResultBlock top = self->priorityQueue.top();
 		self->priorityQueue.pop();
 		state uint8_t hash = top.hash;
-		Key prefix = self->pipelinedReaders[(int)hash]->prefix;
-		state Standalone<RangeResultRef> ret = top.consume(prefix);
+		state Standalone<RangeResultRef> ret = top.consume();
 		if (top.empty()) {
 			self->pipelinedReaders[(int)hash]->release();
 			try {
@@ -173,12 +173,12 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 TEST_CASE("/fdbclient/mutationlogreader/VersionKeyRefConversion") {
 	Key prefix = LiteralStringRef("foos");
 
-	ASSERT(keyRefToVersion(versionToKey(0, prefix), prefix) == 0);
-	ASSERT(keyRefToVersion(versionToKey(1, prefix), prefix) == 1);
-	ASSERT(keyRefToVersion(versionToKey(-1, prefix), prefix) == -1);
-	ASSERT(keyRefToVersion(versionToKey(std::numeric_limits<int64_t>::min(), prefix), prefix) ==
+	ASSERT(keyRefToVersion(versionToKey(0, prefix), prefix.size()) == 0);
+	ASSERT(keyRefToVersion(versionToKey(1, prefix), prefix.size()) == 1);
+	ASSERT(keyRefToVersion(versionToKey(-1, prefix), prefix.size()) == -1);
+	ASSERT(keyRefToVersion(versionToKey(std::numeric_limits<int64_t>::min(), prefix), prefix.size()) ==
 	       std::numeric_limits<int64_t>::min());
-	ASSERT(keyRefToVersion(versionToKey(std::numeric_limits<int64_t>::max(), prefix), prefix) ==
+	ASSERT(keyRefToVersion(versionToKey(std::numeric_limits<int64_t>::max(), prefix), prefix.size()) ==
 	       std::numeric_limits<int64_t>::max());
 
 	return Void();

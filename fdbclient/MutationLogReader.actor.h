@@ -35,13 +35,13 @@
 
 struct RangeResultBlock {
 	RangeResult result;
-	Version firstVersion;
-	Version lastVersion; // not filled in until result.isReady()
-	uint8_t hash; // points back to the PipelinedReader
-	// Key prefix;
-	int indexToRead;
+	Version firstVersion;  // version of first record
+	Version lastVersion;   // version of last record
+	uint8_t hash;          // points back to the PipelinedReader
+	int prefixLen;         // size of keyspace, uid, and hash prefix
+	int indexToRead;       // index of first unconsumed record
 
-	Standalone<RangeResultRef> consume(Key prefix);
+	Standalone<RangeResultRef> consume();
 
 	bool empty() {
 		// std::cout << "litian bbb " << indexToRead << " " << result.size() << std::endl;
