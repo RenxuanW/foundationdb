@@ -39,7 +39,6 @@ Standalone<RangeResultRef> RangeResultBlock::consume(Key prefix) {
 		std::min(lastVersion,
 					(firstVersion + CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE - 1) / CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE *
 						CLIENT_KNOBS->LOG_RANGE_BLOCK_SIZE) + 1; // firstVersion rounded up to the nearest 1M versions, then + 1
-	// std::cout << "litian 9 " << (int)hash << " " << firstVersion << " " << lastVersion << " " << stopVersion << std::endl;
 	int startIndex = indexToRead;
 	while (indexToRead < result.size() && keyRefToVersion(result[indexToRead].key, prefix) < stopVersion) {
 		++indexToRead;
@@ -72,14 +71,16 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 		                                                              .lastVersion = self->currentBeginVersion - 1,
 		                                                              .hash = self->hash,
 		                                                              .indexToRead = 0 };
-	state KeySelector end = firstGreaterOrEqual(versionToKey(self->endVersion, self->prefix));
+	self->reads.send(previousResult);
+	wait(self->readerLimit.take());
+	state Key end = versionToKey(self->endVersion, self->prefix);
 
 	loop {
 		// Get the lock
 		wait(self->readerLimit.take());
 
 		// Init read boundaries
-		state KeySelector begin = firstGreaterOrEqual(versionToKey(previousResult.lastVersion + 1, self->prefix));
+		state Key begin = versionToKey(previousResult.lastVersion, self->prefix);
 
 		// Read begin to end forever until successful
 		loop {
@@ -87,7 +88,7 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 				tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 				tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 
-				RangeResult rangevalue = wait(tr.getRange(begin, end, limits));
+				RangeResult rangevalue = wait(tr.getRange(KeyRangeRef(keyAfter(begin), end), limits));
 
 				// No more results, send end of stream
 				if (rangevalue.empty()) {
@@ -105,7 +106,6 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 					// Send results to the reads stream
 					self->reads.send(previousResult);
 				}
-
 				break;
 			} catch (Error& e) {
 				if (e.code() == error_code_transaction_too_old) {
@@ -123,10 +123,7 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
 	state int h;
 	for (h = 0; h < 256; ++h) {
-		// std::cout << "litian 2 " << h << " " << self->pipelinedReaders[h].reads.size() << std::endl;
 		RangeResultBlock front = waitNext(self->pipelinedReaders[h]->reads.getFuture());
-		// std::cout << "litian 2.5 " << (int)front.hash << " " << front.firstVersion << " " << front.lastVersion << " "
-		// << front.indexToRead << std::endl;
 		self->priorityQueue.push(front);
 	}
 	return Void();
@@ -137,44 +134,39 @@ Future<Standalone<RangeResultRef>> MutationLogReader::getNext() {
 }
 
 ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(MutationLogReader* self) {
-	if (self->priorityQueue.empty()) {
-		return Standalone<RangeResultRef>();
-	}
-	RangeResultBlock top = self->priorityQueue.top();
-	self->priorityQueue.pop();
-	state uint8_t hash = top.hash;
-	Key prefix = self->pipelinedReaders[(int)hash]->prefix;
-
-	state Standalone<RangeResultRef> ret = top.consume(prefix);
-
-	// std::cout << "litian aaa " << (int)hash << " " << ret.size() << std::endl;
-	if (top.empty()) {
-		self->pipelinedReaders[(int)hash]->release();
-		try {
-			RangeResultBlock next = waitNext(self->pipelinedReaders[(int)hash]->reads.getFuture());
-			self->priorityQueue.push(next);
-		} catch(Error &e) {
-			if(e.code() == error_code_end_of_stream) {
-				++self->finished;
+	loop {
+		if (self->finished == 256) {
+			state int i;
+			for(i = 0; i < self->pipelinedReaders.size(); ++i) {
+				wait(self->pipelinedReaders[i]->done());
 			}
-			else {
-				throw e;
+			throw end_of_stream();
+		}
+		RangeResultBlock top = self->priorityQueue.top();
+		self->priorityQueue.pop();
+		state uint8_t hash = top.hash;
+		Key prefix = self->pipelinedReaders[(int)hash]->prefix;
+		state Standalone<RangeResultRef> ret = top.consume(prefix);
+		if (top.empty()) {
+			self->pipelinedReaders[(int)hash]->release();
+			try {
+				RangeResultBlock next = waitNext(self->pipelinedReaders[(int)hash]->reads.getFuture());
+				self->priorityQueue.push(next);
+			} catch(Error &e) {
+				if(e.code() == error_code_end_of_stream) {
+					++self->finished;
+				}
+				else {
+					throw e;
+				}
 			}
+		} else {
+			self->priorityQueue.push(top);
 		}
-	} else {
-		self->priorityQueue.push(top);
-	}
-
-	if(self->finished == 256) {
-		state int i;
-		for(i = 0; i < self->pipelinedReaders.size(); ++i) {
-			wait(self->pipelinedReaders[i]->done());
+		if (ret.size() != 0) {
+			return ret;
 		}
-
-		throw end_of_stream();
 	}
-
-	return ret;
 }
 
 // UNIT TESTS

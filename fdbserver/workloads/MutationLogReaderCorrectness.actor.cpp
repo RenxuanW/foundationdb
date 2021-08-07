@@ -39,7 +39,7 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 	Version endVersion;
 	Key uid;
 	Key baLogRangePrefix;
-	bool debug = false;
+	bool debug = true;
 
 	Version recordVersion(int index) {
 		return beginVersion + versionIncrement * index;
@@ -95,14 +95,14 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 					state int iEnd = std::min(iStart + batchSize, self->records);
 
 					for(; i < iEnd; ++i) {
-						Version version = self->recordVersion(i);
+						// Version version = self->recordVersion(i);
 						Key key = self->recordKey(i);
 						Value value = self->recordValue(i);
 						tr.set(key, value);
 
-						if(self->debug) {
-							printf("Insert version %12" PRId64 " (%" PRIx64 ")  key '%s'  value '%s'\n", version, version, key.printable().c_str(), value.toString().c_str());
-						}
+						// if(self->debug) {
+						// 	printf("Insert version %12" PRId64 " (%" PRIx64 ")  key '%s'  value '%s'\n", version, version, key.printable().c_str(), value.toString().c_str());
+						// }
 					}
 
 					wait(tr.commit());
@@ -131,13 +131,15 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 					bool valueMatch = rec.value == expectedValue;
 
 					if(self->debug) {
-						printf("key:            %s\n", rec.key.printable().c_str());
 						if(!keyMatch) {
-							printf("expected key:   %s\n", expectedKey.printable().c_str());
+                            printf("expected version:          %lld\n", self->recordVersion(nextExpectedRecord));
+						    // printf("key:            %s\n", rec.key.printable().c_str());
+							// printf("expected key:   %s\n", expectedKey.printable().c_str());
 						}
-						printf("value:          %s\n", rec.value.printable().c_str());
 						if(!valueMatch) {
-							printf("expected value: %s\n", expectedValue.printable().c_str());
+                            printf("expected version:          %lld\n", self->recordVersion(nextExpectedRecord));
+						    // printf("value:          %s\n", rec.value.printable().c_str());
+							// printf("expected value: %s\n", expectedValue.printable().c_str());
 						}
 					}
 
