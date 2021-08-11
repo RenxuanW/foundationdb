@@ -106,8 +106,9 @@ struct MutationLogReaderCorrectnessWorkload : TestWorkload {
 			}
 		}
 
-		state Reference<MutationLogReader> reader = wait(MutationLogReader::Create(
-		    cx, self->beginVersion, self->endVersion, self->uid, backupLogKeys.begin, /*pipelineDepth=*/1));
+		state Reference<mutation_log_reader::MutationLogReaderSparse> reader =
+		    wait(mutation_log_reader::MutationLogReaderSparse::Create(
+		        cx, self->beginVersion, self->endVersion, self->uid, backupLogKeys.begin, /*pipelineDepth=*/3));
 
 		state int nextExpectedRecord = 0;
 

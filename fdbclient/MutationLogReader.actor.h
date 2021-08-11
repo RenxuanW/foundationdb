@@ -33,10 +33,17 @@
 #include "flow/ActorCollection.h"
 #include "flow/actorcompiler.h" // has to be last include
 
+class MutationLogReader : public ReferenceCounted<MutationLogReader> {
+public:
+	virtual ~MutationLogReader(){};
+	// TODO(renxuan): implement processMutationLog() function, which will be the main function replacing the current
+	// logic. virtual ACTOR Future<Void> processMutationLog() = 0;
+};
+
 namespace mutation_log_reader {
 
 // RangeResultBlock is the wrapper of RangeResult. Each PipelinedReader maintains a Deque of RangeResultBlocks, from its
-// getRange results. MutationLogReader maintains a priority queue of RangeResultBlocks, and provides RangeResult
+// getRange results. MutationLogReaderSparse maintains a priority queue of RangeResultBlocks, and provides RangeResult
 // partially in it to consumer.
 struct RangeResultBlock {
 	RangeResult result;
@@ -56,8 +63,8 @@ struct RangeResultBlock {
 	}
 };
 
-// PipelinedReader is the class actually doing range read (getRange). A MutationLogReader has 256 PipelinedReaders, each
-// in charge of one hash value from 0-255.
+// PipelinedReader is the class actually doing range read (getRange). A MutationLogReaderSparse has 256
+// PipelinedReaders, each in charge of one hash value from 0-255.
 class PipelinedReader {
 public:
 	PipelinedReader(uint8_t h, Version bv, Version ev, unsigned pd, Key p)
@@ -83,12 +90,9 @@ private:
 	Future<Void> reader;
 };
 
-} // namespace mutation_log_reader
-
-class MutationLogReader : public ReferenceCounted<MutationLogReader> {
+class MutationLogReaderSparse : public MutationLogReader {
 public:
-	MutationLogReader() : finished(256) {}
-	MutationLogReader(Database cx, Version bv, Version ev, Key uid, Key beginKey, unsigned pd)
+	MutationLogReaderSparse(Database cx, Version bv, Version ev, Key uid, Key beginKey, unsigned pd)
 	  : beginVersion(bv), endVersion(ev), prefix(uid.withPrefix(beginKey)), pipelineDepth(pd), finished(0) {
 		pipelinedReaders.reserve(256);
 		if (pipelineDepth > 0) {
@@ -100,22 +104,23 @@ public:
 		}
 	}
 
-	ACTOR static Future<Reference<MutationLogReader>> Create(Database cx,
-	                                                         Version bv,
-	                                                         Version ev,
-	                                                         Key uid,
-	                                                         Key beginKey,
-	                                                         unsigned pd) {
-		state Reference<MutationLogReader> self(new MutationLogReader(cx, bv, ev, uid, beginKey, pd));
+	ACTOR static Future<Reference<MutationLogReaderSparse>> Create(Database cx,
+	                                                               Version bv,
+	                                                               Version ev,
+	                                                               Key uid,
+	                                                               Key beginKey,
+	                                                               unsigned pd) {
+		state Reference<MutationLogReaderSparse> self(new MutationLogReaderSparse(cx, bv, ev, uid, beginKey, pd));
 		wait(self->initializePQ(self.getPtr()));
 		return self;
 	}
 
-	Future<Standalone<RangeResultRef>> getNext();
+	// virtual ACTOR Future<Void> processMutationLog() override;
+	ACTOR static Future<Void> initializePQ(MutationLogReaderSparse* self);
+	Future<Standalone<RangeResultRef>> getNext(); // Test only
 
 private:
-	ACTOR static Future<Void> initializePQ(MutationLogReader* self);
-	ACTOR static Future<Standalone<RangeResultRef>> getNext_impl(MutationLogReader* self);
+	ACTOR static Future<Standalone<RangeResultRef>> getNext_impl(MutationLogReaderSparse* self);
 
 	std::vector<std::unique_ptr<mutation_log_reader::PipelinedReader>> pipelinedReaders;
 	std::priority_queue<mutation_log_reader::RangeResultBlock> priorityQueue;
@@ -123,6 +128,22 @@ private:
 	Key prefix; // "\xff\x02/alog/UID/" for restore, or "\xff\x02/blog/UID/" for backup
 	unsigned pipelineDepth;
 	unsigned finished;
+};
+
+} // namespace mutation_log_reader
+
+class MutationLogReaderFactory {
+public:
+	ACTOR static Future<Reference<MutationLogReader>> Create(Database cx,
+	                                                         Version bv,
+	                                                         Version ev,
+	                                                         Key uid,
+	                                                         Key beginKey) {
+		state Reference<mutation_log_reader::MutationLogReaderSparse> self(
+		    new mutation_log_reader::MutationLogReaderSparse(cx, bv, ev, uid, beginKey, /*pipelineDepth=*/3));
+		wait(self->initializePQ(self.getPtr()));
+		return self;
+	}
 };
 
 #include "flow/unactorcompiler.h"

@@ -119,13 +119,11 @@ ACTOR Future<Void> PipelinedReader::getNext_impl(PipelinedReader* self, Database
 	}
 }
 
-} // namespace mutation_log_reader
-
-ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
+ACTOR Future<Void> MutationLogReaderSparse::initializePQ(MutationLogReaderSparse* self) {
 	state int h;
 	for (h = 0; h < 256; ++h) {
 		try {
-			mutation_log_reader::RangeResultBlock front = waitNext(self->pipelinedReaders[h]->reads.getFuture());
+			RangeResultBlock front = waitNext(self->pipelinedReaders[h]->reads.getFuture());
 			self->priorityQueue.push(front);
 		} catch (Error& e) {
 			if (e.code() != error_code_end_of_stream) {
@@ -137,11 +135,11 @@ ACTOR Future<Void> MutationLogReader::initializePQ(MutationLogReader* self) {
 	return Void();
 }
 
-Future<Standalone<RangeResultRef>> MutationLogReader::getNext() {
+Future<Standalone<RangeResultRef>> MutationLogReaderSparse::getNext() {
 	return getNext_impl(this);
 }
 
-ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(MutationLogReader* self) {
+ACTOR Future<Standalone<RangeResultRef>> MutationLogReaderSparse::getNext_impl(MutationLogReaderSparse* self) {
 	loop {
 		if (self->finished == 256) {
 			state int i;
@@ -150,15 +148,14 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 			}
 			throw end_of_stream();
 		}
-		mutation_log_reader::RangeResultBlock top = self->priorityQueue.top();
+		RangeResultBlock top = self->priorityQueue.top();
 		self->priorityQueue.pop();
 		uint8_t hash = top.hash;
 		state Standalone<RangeResultRef> ret = top.consume();
 		if (top.empty()) {
 			self->pipelinedReaders[(int)hash]->release();
 			try {
-				mutation_log_reader::RangeResultBlock next =
-				    waitNext(self->pipelinedReaders[(int)hash]->reads.getFuture());
+				RangeResultBlock next = waitNext(self->pipelinedReaders[(int)hash]->reads.getFuture());
 				self->priorityQueue.push(next);
 			} catch (Error& e) {
 				if (e.code() == error_code_end_of_stream) {
@@ -175,6 +172,7 @@ ACTOR Future<Standalone<RangeResultRef>> MutationLogReader::getNext_impl(Mutatio
 		}
 	}
 }
+} // namespace mutation_log_reader
 
 namespace {
 // UNIT TESTS
