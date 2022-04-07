@@ -29,7 +29,7 @@
 #include "fdbclient/CoordinationInterface.h"
 
 // Determine public IP address by calling the first coordinator.
-IPAddress determinePublicIPAutomatically(ClusterConnectionString& ccs) {
+IPAddress determinePublicIPAutomatically(const ClusterConnectionString& ccs) {
 	try {
 		using namespace boost::asio;
 

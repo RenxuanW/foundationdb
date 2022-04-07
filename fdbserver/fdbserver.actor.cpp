@@ -215,7 +215,7 @@ extern void copyTest();
 extern void versionedMapTest();
 extern void createTemplateDatabase();
 // FIXME: this really belongs in a header somewhere since it is actually used.
-extern IPAddress determinePublicIPAutomatically(ClusterConnectionString& ccs);
+extern IPAddress determinePublicIPAutomatically(const ClusterConnectionString& ccs);
 
 extern const char* getSourceVersion();
 
