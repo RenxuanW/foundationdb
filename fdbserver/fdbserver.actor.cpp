@@ -854,7 +854,6 @@ std::pair<NetworkAddressList, NetworkAddressList> buildNetworkAddresses(
 	NetworkAddressList publicNetworkAddresses;
 	NetworkAddressList listenNetworkAddresses;
 
-	connectionRecord.resolveHostnamesBlocking();
 	auto& coordinators = connectionRecord.getConnectionString().coordinators();
 	ASSERT(coordinators.size() > 0);
 
