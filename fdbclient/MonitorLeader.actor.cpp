@@ -54,7 +54,7 @@ FDB_DEFINE_BOOLEAN_PARAM(ConnectionStringNeedsPersisted);
 
 // Returns the connection string currently held in this object. This may not match the stored record if it hasn't
 // been persisted or if the persistent storage for the record has been modified externally.
-const ClusterConnectionString& IClusterConnectionRecord::getConnectionString() const {
+ClusterConnectionString& IClusterConnectionRecord::getConnectionString() {
 	return cs;
 }
 
@@ -497,20 +497,30 @@ ClientLeaderRegInterface::ClientLeaderRegInterface(INetwork* local) {
 // Nominee is the worker among all workers that are considered as leader by one coordinator
 // This function contacts a coordinator coord to ask who is its nominee.
 ACTOR Future<Void> monitorNominee(Key key,
-                                  ClientLeaderRegInterface coord,
+                                  ClientLeaderRegInterface* coord,
                                   AsyncTrigger* nomineeChange,
                                   Optional<LeaderInfo>* info) {
 	loop {
-		state Optional<LeaderInfo> li =
-		    wait(retryBrokenPromise(coord.getLeader,
-		                            GetLeaderRequest(key, info->present() ? info->get().changeID : UID()),
-		                            TaskPriority::CoordinationReply));
+		state Optional<LeaderInfo> li;
+		if (coord->hostname.present()) {
+			wait(store(li,
+			           retryGetReplyFromHostname(&coord->getLeader,
+			                                     GetLeaderRequest(key, info->present() ? info->get().changeID : UID()),
+			                                     coord->hostname.get(),
+			                                     WLTOKEN_CLIENTLEADERREG_GETLEADER,
+			                                     TaskPriority::CoordinationReply)));
+		} else {
+			wait(store(li,
+			           retryBrokenPromise(coord->getLeader,
+			                              GetLeaderRequest(key, info->present() ? info->get().changeID : UID()),
+			                              TaskPriority::CoordinationReply)));
+		}
 
 		wait(Future<Void>(Void())); // Make sure we weren't cancelled
 
 		TraceEvent("GetLeaderReply")
 		    .suppressFor(1.0)
-		    .detail("Coordinator", coord.getLeader.getEndpoint().getPrimaryAddress())
+		    .detail("Coordinator", coord->getLeader.getEndpoint().getPrimaryAddress())
 		    .detail("Nominee", li.present() ? li.get().changeID : UID())
 		    .detail("ClusterKey", key.printable());
 
@@ -590,8 +600,8 @@ ACTOR Future<MonitorLeaderInfo> monitorLeaderOneGeneration(Reference<IClusterCon
 	// Ask all coordinators if the worker is considered as a leader (leader nominee) by the coordinator.
 	actors.reserve(coordinators.clientLeaderServers.size());
 	for (int i = 0; i < coordinators.clientLeaderServers.size(); i++) {
-		actors.push_back(
-		    monitorNominee(coordinators.clusterKey, coordinators.clientLeaderServers[i], &nomineeChange, &nominees[i]));
+		actors.push_back(monitorNominee(
+		    coordinators.clusterKey, &coordinators.clientLeaderServers[i], &nomineeChange, &nominees[i]));
 	}
 	allActors = waitForAll(actors);
 
@@ -730,6 +740,10 @@ ACTOR Future<Void> getClientInfoFromLeader(Reference<AsyncVar<Optional<ClusterCo
 	while (!knownLeader->get().present()) {
 		wait(knownLeader->onChange());
 	}
+	TraceEvent("Haozi")
+		.detail("Event", "GetClientInfoFromLeaderStart")
+		.detail("OpenDatabaseEndpoint", knownLeader->get().get().clientInterface.openDatabase.getEndpoint().getPrimaryAddress().toString())
+		.log();
 
 	state double lastRequestTime = now();
 	state OpenDatabaseRequest req = clientData->getRequest();
@@ -757,6 +771,7 @@ ACTOR Future<Void> getClientInfoFromLeader(Reference<AsyncVar<Optional<ClusterCo
 }
 
 ACTOR Future<Void> monitorLeaderAndGetClientInfo(Key clusterKey,
+                                                 std::vector<Hostname> hostnames,
                                                  std::vector<NetworkAddress> coordinators,
                                                  ClientData* clientData,
                                                  Reference<AsyncVar<Optional<LeaderInfo>>> leaderInfo) {
@@ -767,8 +782,14 @@ ACTOR Future<Void> monitorLeaderAndGetClientInfo(Key clusterKey,
 	state Reference<AsyncVar<Optional<ClusterControllerClientInterface>>> knownLeader(
 	    new AsyncVar<Optional<ClusterControllerClientInterface>>{});
 
-	for (auto s = coordinators.begin(); s != coordinators.end(); ++s) {
-		clientLeaderServers.push_back(ClientLeaderRegInterface(*s));
+	TraceEvent("Haozi").detail("Event", "MonitorLeaderAndGetClientInfo").log();
+
+	clientLeaderServers.resize(hostnames.size() + coordinators.size());
+	for (auto h : hostnames) {
+		clientLeaderServers.push_back(ClientLeaderRegInterface(h));
+	}
+	for (auto s : coordinators) {
+		clientLeaderServers.push_back(ClientLeaderRegInterface(s));
 	}
 
 	nominees.resize(clientLeaderServers.size());
@@ -777,7 +798,7 @@ ACTOR Future<Void> monitorLeaderAndGetClientInfo(Key clusterKey,
 	// Ask all coordinators if the worker is considered as a leader (leader nominee) by the coordinator.
 	actors.reserve(clientLeaderServers.size());
 	for (int i = 0; i < clientLeaderServers.size(); i++) {
-		actors.push_back(monitorNominee(clusterKey, clientLeaderServers[i], &nomineeChange, &nominees[i]));
+		actors.push_back(monitorNominee(clusterKey, &clientLeaderServers[i], &nomineeChange, &nominees[i]));
 	}
 	actors.push_back(getClientInfoFromLeader(knownLeader, clientData));
 	allActors = waitForAll(actors);
@@ -786,6 +807,7 @@ ACTOR Future<Void> monitorLeaderAndGetClientInfo(Key clusterKey,
 		Optional<std::pair<LeaderInfo, bool>> leader = getLeader(nominees);
 		TraceEvent("MonitorLeaderAndGetClientInfoLeaderChange")
 		    .detail("NewLeader", leader.present() ? leader.get().first.changeID : UID(1, 1))
+			.detail("SerializedInfo", leader.present() ? leader.get().first.serializedInfo.size() : 0)
 		    .detail("Key", clusterKey.printable());
 		if (leader.present()) {
 			if (leader.get().first.forward) {
@@ -859,7 +881,8 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
     Reference<ReferencedObject<Standalone<VectorRef<ClientVersionRef>>>> supportedVersions,
     Key traceLogGroup) {
 	state ClusterConnectionString cs = info.intermediateConnRecord->getConnectionString();
-	state std::vector<NetworkAddress> addrs = cs.coordinators();
+	state std::vector<Hostname> hostnames = cs.hostnames;
+	state int coordinatorsSize = hostnames.size() + cs.coordinators().size();
 	state int index = 0;
 	state int successIndex = 0;
 	state Optional<double> incorrectTime;
@@ -867,15 +890,33 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 	state std::vector<CommitProxyInterface> lastCommitProxies;
 	state std::vector<UID> lastGrvProxyUIDs;
 	state std::vector<GrvProxyInterface> lastGrvProxies;
+	state std::vector<ClientLeaderRegInterface> clientLeaderServers;
 
-	deterministicRandom()->randomShuffle(addrs);
+	clientLeaderServers.resize(coordinatorsSize);
+	for (const auto& h : hostnames) {
+		clientLeaderServers.push_back(ClientLeaderRegInterface(h));
+	}
+	for (const auto& c : cs.coordinators()) {
+		clientLeaderServers.push_back(ClientLeaderRegInterface(c));
+	}
+
+	TraceEvent("Haozi")
+		.detail("Event", "MonitorProxiesOneGeneration")
+		.detail("HostnameSize", hostnames.size())
+		.detail("CoordinatorSize", cs.coordinators().size()).log();
+
+	deterministicRandom()->randomShuffle(clientLeaderServers);
+
 	loop {
-		state ClientLeaderRegInterface clientLeaderServer(addrs[index]);
+		TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationLoop").log();
+		state ClientLeaderRegInterface clientLeaderServer = clientLeaderServers[index];
+		state bool usingHostname = clientLeaderServer.hostname.present();
 		state OpenDatabaseCoordRequest req;
 
 		coordinator->set(clientLeaderServer);
 
 		req.clusterKey = cs.clusterKey();
+		req.hostnames = hostnames;
 		req.coordinators = cs.coordinators();
 		req.knownClientInfoID = clientInfo->get().id;
 		req.supportedVersions = supportedVersions->get();
@@ -904,9 +945,22 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 			incorrectTime = Optional<double>();
 		}
 
-		state ErrorOr<CachedSerialization<ClientDBInfo>> rep =
-		    wait(clientLeaderServer.openDatabase.tryGetReply(req, TaskPriority::CoordinationReply));
+		state ErrorOr<CachedSerialization<ClientDBInfo>> rep;
+		if (usingHostname) {
+			wait(store(rep,
+			           tryGetReplyFromHostname(&clientLeaderServer.openDatabase,
+			                                   req,
+			                                   clientLeaderServer.hostname.get(),
+			                                   WLTOKEN_CLIENTLEADERREG_OPENDATABASE,
+			                                   TaskPriority::CoordinationReply)));
+		} else {
+			wait(store(rep, clientLeaderServer.openDatabase.tryGetReply(req, TaskPriority::CoordinationReply)));
+		}
+
+		TraceEvent("Lllllllll0").log();
+
 		if (rep.present()) {
+			TraceEvent("Lllllllll1").log();
 			if (rep.get().read().forward.present()) {
 				TraceEvent("MonitorProxiesForwarding")
 				    .detail("NewConnStr", rep.get().read().forward.get().toString())
@@ -930,13 +984,18 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 			info.hasConnected = true;
 			connRecord->notifyConnected();
 
+			TraceEvent("Lllllllll2").detail("CommitProxies", rep.get().read().commitProxies[0].address().toString())
+									.detail("GrvProxies", rep.get().read().grvProxies[0].address().toString()).log();
+
 			auto& ni = rep.get().mutate();
 			shrinkProxyList(ni, lastCommitProxyUIDs, lastCommitProxies, lastGrvProxyUIDs, lastGrvProxies);
 			clientInfo->set(ni);
 			successIndex = index;
 		} else {
+			TraceEvent("Lllllllll3").log();
 			TEST(rep.getError().code() == error_code_failed_to_progress); // Coordinator cant talk to cluster controller
-			index = (index + 1) % addrs.size();
+			TEST(rep.getError().code() == error_code_lookup_failed); // Coordinator hostname resolving failure
+			index = (index + 1) % coordinatorsSize;
 			if (index == successIndex) {
 				wait(delay(CLIENT_KNOBS->COORDINATOR_RECONNECTION_DELAY));
 			}
@@ -952,6 +1011,7 @@ ACTOR Future<Void> monitorProxies(
     Key traceLogGroup) {
 	state MonitorLeaderInfo info(connRecord->get());
 	loop {
+		TraceEvent("Haozi").detail("Event", "MonitorProxies").log();
 		choose {
 			when(MonitorLeaderInfo _info = wait(monitorProxiesOneGeneration(
 			         connRecord->get(), clientInfo, coordinator, info, supportedVersions, traceLogGroup))) {

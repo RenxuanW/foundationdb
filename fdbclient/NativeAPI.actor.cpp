@@ -2110,7 +2110,7 @@ void DatabaseContext::expireThrottles() {
 	}
 }
 
-extern IPAddress determinePublicIPAutomatically(const ClusterConnectionString& ccs);
+extern IPAddress determinePublicIPAutomatically(ClusterConnectionString& ccs);
 
 // Creates a database object that represents a connection to a cluster
 // This constructor uses a preallocated DatabaseContext that may have been created
@@ -2171,6 +2171,7 @@ Database Database::createDatabase(Reference<IClusterConnectionRecord> connRecord
 
 	g_network->initTLS();
 
+	TraceEvent("Haozi").detail("Event", "CreateDatabase").log();
 	auto clientInfo = makeReference<AsyncVar<ClientDBInfo>>();
 	auto coordinator = makeReference<AsyncVar<Optional<ClientLeaderRegInterface>>>();
 	auto connectionRecord = makeReference<AsyncVar<Reference<IClusterConnectionRecord>>>();

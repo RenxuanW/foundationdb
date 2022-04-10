@@ -106,19 +106,26 @@ Future<ErrorOr<REPLY_TYPE(Req)>> tryGetReplyFromHostname(RequestStream<Req>* to,
 	// A wrapper of tryGetReply(request), except that the request is sent to an address resolved from a hostname.
 	// If resolving fails, return lookup_failed().
 	// Otherwise, return tryGetReply(request).
+	TraceEvent("Xuanxuan1").log();
 	Optional<NetworkAddress> address = wait(hostname.resolve());
+	TraceEvent("Xuanxuan2").detail("ResolveSuccess", address.present()? "Y":"N").log();
 	if (!address.present()) {
 		return ErrorOr<REPLY_TYPE(Req)>(lookup_failed());
 	}
 	*to = RequestStream<Req>(Endpoint::wellKnown({ address.get() }, token));
+	TraceEvent("Xuanxuan3").log();
 	ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request, taskID));
+	TraceEvent("Xuanxuan4").log();
 	if (reply.isError()) {
+		TraceEvent("Xuanxuan5").error(reply.getError()).log();
 		resetReply(request);
 		if (reply.getError().code() == error_code_request_maybe_delivered) {
 			// Connection failure.
 			hostname.resetToUnresolved();
 			INetworkConnections::net()->removeCachedDNS(hostname.host, hostname.service);
 		}
+	} else {
+		TraceEvent("Xuanxuan6").log();
 	}
 	return reply;
 }
@@ -132,10 +139,14 @@ Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
 	// Suitable for use with hostname, where RequestStream is NOT initialized yet.
 	// Not normally useful for endpoints initialized with NetworkAddress.
 	loop {
+		TraceEvent("Laolao1").log();
 		NetworkAddress address = wait(hostname.resolveWithRetry());
+		TraceEvent("Laolao2").detail("Address", address.toString()).log();
 		*to = RequestStream<Req>(Endpoint::wellKnown({ address }, token));
 		ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request));
+		TraceEvent("Laolao3").detail("Error", reply.isError()? "True":"False").log();
 		if (reply.isError()) {
+			TraceEvent("Laolao4").error(reply.getError()).log();
 			resetReply(request);
 			if (reply.getError().code() == error_code_request_maybe_delivered) {
 				// Connection failure.
@@ -145,6 +156,7 @@ Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
 				throw reply.getError();
 			}
 		} else {
+			TraceEvent("Laolao5").log();
 			return reply.get();
 		}
 	}

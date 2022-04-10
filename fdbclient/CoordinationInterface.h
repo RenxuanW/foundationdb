@@ -107,7 +107,7 @@ public:
 
 	// Returns the connection string currently held in this object. This may not match the stored record if it hasn't
 	// been persisted or if the persistent storage for the record has been modified externally.
-	const ClusterConnectionString& getConnectionString() const;
+	ClusterConnectionString& getConnectionString();
 
 	// Sets the connections string held by this object and persists it.
 	virtual Future<Void> setAndPersistConnectionString(ClusterConnectionString const&) = 0;
@@ -242,12 +242,21 @@ struct OpenDatabaseCoordRequest {
 	Standalone<VectorRef<ClientVersionRef>> supportedVersions;
 	UID knownClientInfoID;
 	Key clusterKey;
+	std::vector<Hostname> hostnames;
 	std::vector<NetworkAddress> coordinators;
 	ReplyPromise<CachedSerialization<struct ClientDBInfo>> reply;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, issues, supportedVersions, traceLogGroup, knownClientInfoID, clusterKey, coordinators, reply);
+		serializer(ar,
+		           issues,
+		           supportedVersions,
+		           traceLogGroup,
+		           knownClientInfoID,
+		           clusterKey,
+		           hostnames,
+		           coordinators,
+		           reply);
 	}
 };
 

@@ -369,6 +369,8 @@ ACTOR Future<Void> clusterOpenDatabase(ClusterControllerData::DBInfo* db, OpenDa
 	if (db->clientStatus.size() > 10000) {
 		TraceEvent(SevWarnAlways, "TooManyClientStatusEntries").suppressFor(1.0);
 	}
+	TraceEvent("Haozi").detail("Event", "ClusterOpenDatabaseStart")
+		.detail("Id", db->clientInfo->get().id).detail("KnownClientInfoID", req.knownClientInfoID).log();
 
 	while (db->clientInfo->get().id == req.knownClientInfoID) {
 		choose {
@@ -378,6 +380,8 @@ ACTOR Future<Void> clusterOpenDatabase(ClusterControllerData::DBInfo* db, OpenDa
 			} // The client might be long gone!
 		}
 	}
+	TraceEvent("Haozi").detail("Event", "ClusterOpenDatabaseEnd")
+		.detail("Id", db->clientInfo->get().id).detail("KnownClientInfoID", req.knownClientInfoID).log();
 
 	req.reply.send(db->clientInfo->get());
 	return Void();
@@ -1583,6 +1587,11 @@ ACTOR Future<Void> monitorGlobalConfig(ClusterControllerData::DBInfo* db) {
 				state Optional<Value> globalConfigVersion = wait(tr.get(globalConfigVersionKey));
 				state ClientDBInfo clientInfo = db->serverInfo->get().client;
 
+				TraceEvent("Haozi")
+					.detail("Event", "MonitorGlobalConfig")
+					.detail("CommitProxy", clientInfo.commitProxies.size())
+					.detail("GrvProxy", clientInfo.grvProxies.size()).log();
+
 				if (globalConfigVersion.present()) {
 					// Since the history keys end with versionstamps, they
 					// should be sorted correctly (versionstamps are stored in
@@ -1651,7 +1660,9 @@ ACTOR Future<Void> monitorGlobalConfig(ClusterControllerData::DBInfo* db) {
 				}
 
 				state Future<Void> globalConfigFuture = tr.watch(globalConfigVersionKey);
+				TraceEvent("Haozi").detail("Event", "MonitorGlobalConfigBeforeCommit").log();
 				wait(tr.commit());
+				TraceEvent("Haozi").detail("Event", "MonitorGlobalConfigAfterCommit").log();
 				wait(globalConfigFuture);
 				break;
 			} catch (Error& e) {
@@ -2486,6 +2497,8 @@ ACTOR Future<Void> clusterControllerCore(ClusterControllerFullInterface interf,
 	state uint64_t step = 0;
 	state Future<ErrorOr<Void>> error = errorOr(actorCollection(self.addActor.getFuture()));
 
+	TraceEvent("Haozi").detail("Event", "ClusterControllerCoreStart").log();
+
 	// EncryptKeyProxy is necessary for TLog recovery, recruit it as the first process
 	if (SERVER_KNOBS->ENABLE_ENCRYPTION) {
 		self.addActor.send(monitorEncryptKeyProxy(&self));
@@ -2535,6 +2548,7 @@ ACTOR Future<Void> clusterControllerCore(ClusterControllerFullInterface interf,
 			return Void();
 		}
 		when(OpenDatabaseRequest req = waitNext(interf.clientInterface.openDatabase.getFuture())) {
+			TraceEvent("Haozi").detail("Event", "ReceivedOpenDatabaseRequest").log();
 			++self.openDatabaseRequests;
 			self.addActor.send(clusterOpenDatabase(&self.db, req));
 		}

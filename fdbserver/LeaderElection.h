@@ -44,7 +44,7 @@ Future<Void> tryBecomeLeader(ServerCoordinators const& coordinators,
                              Reference<AsyncVar<ClusterControllerPriorityInfo>> const& asyncPriorityInfo);
 
 // Inform all the coordinators that they have been replaced with a new connection string
-Future<Void> changeLeaderCoordinators(ServerCoordinators const& coordinators, Value const& forwardingInfo);
+Future<Void> changeLeaderCoordinators(ServerCoordinators* const& coordinators, Value const& forwardingInfo);
 
 #ifndef __INTEL_COMPILER
 #pragma region Implementation
@@ -68,6 +68,7 @@ Future<Void> tryBecomeLeader(ServerCoordinators const& coordinators,
 	                                         serializedInfo,
 	                                         hasConnected,
 	                                         asyncPriorityInfo);
+    TraceEvent("Haozi").detail("Event", "TryBecomeLeader").log();
 	return m || asyncDeserialize(serializedInfo, outKnownLeader);
 }
 

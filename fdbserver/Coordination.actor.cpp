@@ -215,6 +215,9 @@ ACTOR Future<Void> openDatabase(ClientData* db,
                                 Future<Void> checkStuck) {
 	state ErrorOr<CachedSerialization<ClientDBInfo>> replyContents;
 	state Future<Void> clientInfoOnChange = db->clientInfo->onChange();
+	TraceEvent("Haozi").detail("Event", "OpenDatabaseStart")
+						.detail("ClientInfoID", db->clientInfo->get().read().id)
+						.detail("KnownClientInfoID", req.knownClientInfoID).log();
 
 	++(*clientCount);
 	hasConnectedClients->set(true);
@@ -232,6 +235,9 @@ ACTOR Future<Void> openDatabase(ClientData* db,
 				break;
 			}
 			when(wait(yieldedFuture(clientInfoOnChange))) {
+				TraceEvent("Haozi").detail("Event", "OpenDatabaseOnChange")
+						.detail("ClientInfoID", db->clientInfo->get().read().id)
+						.detail("KnownClientInfoID", req.knownClientInfoID).log();
 				clientInfoOnChange = db->clientInfo->onChange();
 				replyContents = db->clientInfo->get();
 			}
@@ -244,6 +250,10 @@ ACTOR Future<Void> openDatabase(ClientData* db,
 			} // The client might be long gone!
 		}
 	}
+
+	TraceEvent("Haozi").detail("Event", "OpenDatabaseBreak")
+						.detail("ClientInfoID", db->clientInfo->get().read().id)
+						.detail("KnownClientInfoID", req.knownClientInfoID).log();
 
 	if (req.supportedVersions.size() > 0) {
 		db->clientStatusInfoMap.erase(req.reply.getEndpoint().getPrimaryAddress());
@@ -266,7 +276,6 @@ ACTOR Future<Void> remoteMonitorLeader(int* clientCount,
                                        Reference<AsyncVar<bool>> hasConnectedClients,
                                        Reference<AsyncVar<Optional<LeaderInfo>>> currentElectedLeader,
                                        ElectionResultRequest req) {
-	state bool coordinatorsChangeDetected = false;
 	state Future<Void> currentElectedLeaderOnChange = currentElectedLeader->onChange();
 	++(*clientCount);
 	hasConnectedClients->set(true);
@@ -315,6 +324,17 @@ ACTOR Future<Void> leaderRegister(LeaderElectionRegInterface interf, Key key) {
 
 	loop choose {
 		when(OpenDatabaseCoordRequest req = waitNext(interf.openDatabase.getFuture())) {
+			std::string hhh;
+			for(int i = 0; i < req.hostnames.size(); ++i) {
+				if(i) hhh += ",";
+				hhh += req.hostnames[i].toString();
+			}
+
+			TraceEvent("Haozi").detail("Event", "OpenDatabaseCoordRequestReceived")
+								.detail("HostnameSize", req.hostnames.size())
+								.detail("Hostnames", hhh)
+								.detail("CoordinatorSize", req.coordinators.size()).log();
+
 			if (clientData.clientInfo->get().read().id.isValid() &&
 			    clientData.clientInfo->get().read().id != req.knownClientInfoID &&
 			    !clientData.clientInfo->get().read().forward.present()) {
@@ -322,7 +342,7 @@ ACTOR Future<Void> leaderRegister(LeaderElectionRegInterface interf, Key key) {
 			} else {
 				if (!leaderMon.isValid()) {
 					leaderMon = monitorLeaderAndGetClientInfo(
-					    req.clusterKey, req.coordinators, &clientData, currentElectedLeader);
+					    req.clusterKey, req.hostnames, req.coordinators, &clientData, currentElectedLeader);
 				}
 				actors.add(
 				    openDatabase(&clientData, &clientCount, hasConnectedClients, req, canConnectToLeader.checkStuck()));
@@ -334,8 +354,8 @@ ACTOR Future<Void> leaderRegister(LeaderElectionRegInterface interf, Key key) {
 				req.reply.send(currentElectedLeader->get());
 			} else {
 				if (!leaderMon.isValid()) {
-					leaderMon =
-					    monitorLeaderAndGetClientInfo(req.key, req.coordinators, &clientData, currentElectedLeader);
+					leaderMon = monitorLeaderAndGetClientInfo(
+					    req.key, req.hostnames, req.coordinators, &clientData, currentElectedLeader);
 				}
 				actors.add(remoteMonitorLeader(&clientCount, hasConnectedClients, currentElectedLeader, req));
 			}
@@ -374,6 +394,7 @@ ACTOR Future<Void> leaderRegister(LeaderElectionRegInterface interf, Key key) {
 			}
 		}
 		when(LeaderHeartbeatRequest req = waitNext(interf.leaderHeartbeat.getFuture())) {
+			TraceEvent("Haozi").detail("Event", "LeaderHeartbeatRequestReceived").log();
 			if (!nextInterval.isValid()) {
 				nextInterval = delay(0);
 			}

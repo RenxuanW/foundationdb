@@ -49,6 +49,8 @@ struct FlowReceiver : public NetworkMessageReceiver {
 	bool isLocalEndpoint() { return m_isLocalEndpoint; }
 	bool isRemoteEndpoint() { return endpoint.isValid() && !m_isLocalEndpoint; }
 
+	bool endpointValid() { return endpoint.isValid(); }
+
 	// If already a remote endpoint, returns that.  Otherwise makes this
 	//   a local endpoint and returns that.
 	const Endpoint& getEndpoint(TaskPriority taskID) {
@@ -853,6 +855,8 @@ public:
 		// queue = (NetNotifiedQueue<T>*)0xdeadbeef;
 	}
 
+	bool endpointValid() { return queue->endpointValid(); }
+
 	const Endpoint& getEndpoint(TaskPriority taskID = TaskPriority::DefaultEndpoint) const {
 		return queue->getEndpoint(taskID);
 	}
@@ -896,14 +900,15 @@ struct serializable_traits<RequestStream<T>> : std::true_type {
 		if constexpr (Archiver::isDeserializing) {
 			Endpoint endpoint;
 			serializer(ar, endpoint);
-			stream = RequestStream<T>(endpoint);
-		} else {
-			const auto& ep = stream.getEndpoint();
-			serializer(ar, ep);
-			if constexpr (Archiver::isSerializing) { // Don't assert this when collecting vtable for flatbuffers
-				UNSTOPPABLE_ASSERT(ep.getPrimaryAddress()
-				                       .isValid()); // No serializing PromiseStreams on a client with no public address
+			if (endpoint.isValid()) {
+				stream = RequestStream<T>(endpoint);
 			}
+		} else {
+			Endpoint ep;
+			if (stream.endpointValid()) {
+				ep = stream.getEndpoint();
+			}
+			serializer(ar, ep);
 		}
 	}
 };

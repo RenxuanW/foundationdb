@@ -870,6 +870,7 @@ ACTOR Future<Optional<CoordinatorsResult>> changeQuorumChecker(Transaction* tr,
 	ClientCoordinators coord(Reference<ClusterConnectionMemoryRecord>(new ClusterConnectionMemoryRecord(*conn)));
 
 	leaderServers.reserve(coord.clientLeaderServers.size());
+	// TODO: retryGetReplyFromHostname
 	for (int i = 0; i < coord.clientLeaderServers.size(); i++)
 		leaderServers.push_back(retryBrokenPromise(coord.clientLeaderServers[i].getLeader,
 		                                           GetLeaderRequest(coord.clusterKey, UID()),
@@ -967,6 +968,7 @@ ACTOR Future<CoordinatorsResult> changeQuorum(Database cx, Reference<IQuorumChan
 					return CoordinatorsResult::BAD_DATABASE_STATE;
 			}
 			leaderServers.reserve(coord.clientLeaderServers.size());
+			// TODO: retryGetReplyFromHostname
 			for (int i = 0; i < coord.clientLeaderServers.size(); i++)
 				leaderServers.push_back(retryBrokenPromise(coord.clientLeaderServers[i].getLeader,
 				                                           GetLeaderRequest(coord.clusterKey, UID()),
@@ -1070,6 +1072,7 @@ struct AutoQuorumChange final : IQuorumChange {
 		ClientCoordinators coord(ccr);
 		std::vector<Future<Optional<LeaderInfo>>> leaderServers;
 		leaderServers.reserve(coord.clientLeaderServers.size());
+		// TODO: retryGetReplyFromHostname
 		for (int i = 0; i < coord.clientLeaderServers.size(); i++) {
 			leaderServers.push_back(retryBrokenPromise(coord.clientLeaderServers[i].getLeader,
 			                                           GetLeaderRequest(coord.clusterKey, UID()),
