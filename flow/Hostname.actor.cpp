@@ -65,7 +65,9 @@ ACTOR Future<Optional<NetworkAddress>> resolveImpl(Hostname* self) {
 				return self->resolvedAddress.get();
 			} catch (...) {
 				self->status = Hostname::UNRESOLVED;
+				std::cerr << "1111111111111111" << std::endl;
 				self->resolveFinish.trigger();
+				std::cerr << "2222222222222222" << std::endl;
 				self->resolvedAddress = Optional<NetworkAddress>();
 				return Optional<NetworkAddress>();
 			}
