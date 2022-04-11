@@ -292,6 +292,7 @@ ACTOR Future<std::vector<NetworkAddress>> tryResolveHostnamesImpl(ClusterConnect
 		allCoordinatorsSet.insert(coord);
 	}
 	std::vector<NetworkAddress> allCoordinators(allCoordinatorsSet.begin(), allCoordinatorsSet.end());
+	std::sort(allCoordinators.begin(), allCoordinators.end());
 	return allCoordinators;
 }
 
@@ -910,7 +911,6 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 	loop {
 		TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationLoop").log();
 		state ClientLeaderRegInterface clientLeaderServer = clientLeaderServers[index];
-		state bool usingHostname = clientLeaderServer.hostname.present();
 		state OpenDatabaseCoordRequest req;
 
 		coordinator->set(clientLeaderServer);
@@ -946,7 +946,7 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 		}
 
 		state ErrorOr<CachedSerialization<ClientDBInfo>> rep;
-		if (usingHostname) {
+		if (clientLeaderServer.hostname.present()) {
 			wait(store(rep,
 			           tryGetReplyFromHostname(&clientLeaderServer.openDatabase,
 			                                   req,
