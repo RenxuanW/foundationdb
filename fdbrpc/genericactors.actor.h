@@ -85,7 +85,7 @@ Future<ErrorOr<REPLY_TYPE(Req)>> tryGetReplyFromHostname(RequestStream<Req>* to,
 		return ErrorOr<REPLY_TYPE(Req)>(lookup_failed());
 	}
 	*to = RequestStream<Req>(Endpoint::wellKnown({ address.get() }, token));
-	ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request));
+	state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request));
 	if (reply.isError()) {
 		resetReply(request);
 		if (reply.getError().code() == error_code_request_maybe_delivered) {
@@ -114,7 +114,7 @@ Future<ErrorOr<REPLY_TYPE(Req)>> tryGetReplyFromHostname(RequestStream<Req>* to,
 	}
 	*to = RequestStream<Req>(Endpoint::wellKnown({ address.get() }, token));
 	TraceEvent("Xuanxuan3").log();
-	ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request, taskID));
+	state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request, taskID));
 	TraceEvent("Xuanxuan4").log();
 	if (reply.isError()) {
 		TraceEvent("Xuanxuan5").error(reply.getError()).log();
@@ -143,7 +143,7 @@ Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
 		NetworkAddress address = wait(hostname.resolveWithRetry());
 		TraceEvent("Laolao2").detail("Address", address.toString()).log();
 		*to = RequestStream<Req>(Endpoint::wellKnown({ address }, token));
-		ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request));
+		state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request));
 		TraceEvent("Laolao3").detail("Error", reply.isError()? "True":"False").log();
 		if (reply.isError()) {
 			TraceEvent("Laolao4").error(reply.getError()).log();
@@ -174,7 +174,7 @@ Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
 	loop {
 		NetworkAddress address = wait(hostname.resolveWithRetry());
 		*to = RequestStream<Req>(Endpoint::wellKnown({ address }, token));
-		ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request, taskID));
+		state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request, taskID));
 		if (reply.isError()) {
 			resetReply(request);
 			if (reply.getError().code() == error_code_request_maybe_delivered) {

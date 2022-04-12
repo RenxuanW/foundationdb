@@ -830,7 +830,8 @@ ACTOR static Future<JsonBuilderObject> processStatusFetcher(
 		}
 	}
 
-	for (auto& coordinator : coordinators.ccr->getConnectionString().coordinators()) {
+	state std::vector<NetworkAddress> addressVec = wait(coordinators.ccr->getConnectionString().tryResolveHostnames());
+	for (auto& coordinator : addressVec) {
 		roles.addCoordinatorRole(coordinator);
 	}
 
@@ -1653,9 +1654,7 @@ static JsonBuilderObject configurationFetcher(Optional<DatabaseConfiguration> co
 			}
 			statusObj["excluded_servers"] = excludedServersArr;
 		}
-		std::vector<ClientLeaderRegInterface> coordinatorLeaderServers = coordinators.clientLeaderServers;
-		int count = coordinatorLeaderServers.size();
-		statusObj["coordinators_count"] = count;
+		statusObj["coordinators_count"] = coordinators.clientLeaderServers.size();
 	} catch (Error&) {
 		incomplete_reasons->insert("Could not retrieve all configuration status information.");
 	}
@@ -2469,6 +2468,7 @@ static JsonBuilderArray tlogFetcher(int* logFaultTolerance,
 
 static JsonBuilderObject faultToleranceStatusFetcher(DatabaseConfiguration configuration,
                                                      ServerCoordinators coordinators,
+													 std::vector<NetworkAddress>& coordinatorAddresses,
                                                      std::vector<WorkerDetails>& workers,
                                                      int extraTlogEligibleZones,
                                                      int minStorageReplicasRemaining,
@@ -2489,7 +2489,7 @@ static JsonBuilderObject faultToleranceStatusFetcher(DatabaseConfiguration confi
 		workerZones[worker.interf.address()] = worker.interf.locality.zoneId().orDefault(LiteralStringRef(""));
 	}
 	std::map<StringRef, int> coordinatorZoneCounts;
-	for (auto& coordinator : coordinators.ccr->getConnectionString().coordinators()) {
+	for (auto& coordinator : coordinatorAddresses) {
 		auto zone = workerZones[coordinator];
 		coordinatorZoneCounts[zone] += 1;
 	}
@@ -3020,6 +3020,8 @@ ACTOR Future<StatusReply> clusterGetStatus(
 			state std::vector<JsonBuilderObject> workerStatuses = wait(getAll(futures2));
 			wait(success(primaryDCFO));
 
+			state std::vector<NetworkAddress> coordinatorAddresses = wait(coordinators.ccr->getConnectionString().tryResolveHostnames());
+
 			int logFaultTolerance = 100;
 			if (db->get().recoveryState >= RecoveryState::ACCEPTING_COMMITS) {
 				statusObj["logs"] = tlogFetcher(&logFaultTolerance, db, address_workers);
@@ -3029,6 +3031,7 @@ ACTOR Future<StatusReply> clusterGetStatus(
 			statusObj["fault_tolerance"] =
 			    faultToleranceStatusFetcher(configuration.get(),
 			                                coordinators,
+											coordinatorAddresses,
 			                                workers,
 			                                extraTlogEligibleZones,
 			                                minStorageReplicasRemaining,
