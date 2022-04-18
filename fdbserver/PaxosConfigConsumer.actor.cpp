@@ -99,18 +99,39 @@ class GetCommittedVersionQuorum {
 
 			// Now roll node forward to match the largest committed version of
 			// the replies.
-			state Reference<ConfigFollowerInfo> quorumCfi(new ConfigFollowerInfo(self->replies[target]));
 			try {
+				std::vector<ConfigFollowerInterface> quorumCfis = self->replies[target];
+				if (!quorumCfis.size()) {
+					throw timed_out();
+				}
+				state ConfigFollowerInterface quorumCfi = quorumCfis[deterministicRandom()->randomInt(0, quorumCfis.size())];
 				state Version lastSeenVersion = std::max(
 				    rollback.present() ? rollback.get() : nodeVersion.lastCommitted, self->largestCompactedResponse);
-				ConfigFollowerGetChangesReply reply =
-				    wait(timeoutError(basicLoadBalance(quorumCfi,
-				                                       &ConfigFollowerInterface::getChanges,
-				                                       ConfigFollowerGetChangesRequest{ lastSeenVersion, target }),
+				state ConfigFollowerGetChangesReply reply;
+				if (quorumCfi.hostname.present()) {
+					wait(timeoutError(store(reply, retryGetReplyFromHostname(&quorumCfi.getChanges,
+				                                       ConfigFollowerGetChangesRequest{ lastSeenVersion, target },
+													   quorumCfi.hostname.get(),
+													   WLTOKEN_CONFIGFOLLOWER_GETCHANGES
+													   )),
 				                      SERVER_KNOBS->GET_COMMITTED_VERSION_TIMEOUT));
-				wait(timeoutError(cfi.rollforward.getReply(ConfigFollowerRollforwardRequest{
+
+				} else {
+					wait(timeoutError(store(reply, quorumCfi.getChanges.getReply(
+				                                       ConfigFollowerGetChangesRequest{ lastSeenVersion, target })),
+				                      SERVER_KNOBS->GET_COMMITTED_VERSION_TIMEOUT));
+				}
+				if (cfi.hostname.present()) {
+					wait(timeoutError(retryGetReplyFromHostname(&cfi.rollforward, ConfigFollowerRollforwardRequest{
+				                      rollback, nodeVersion.lastCommitted, target, reply.changes, reply.annotations },
+									  cfi.hostname.get(), WLTOKEN_CONFIGFOLLOWER_ROLLFORWARD
+									  ),
+				                  SERVER_KNOBS->GET_COMMITTED_VERSION_TIMEOUT));
+				} else {
+					wait(timeoutError(cfi.rollforward.getReply(ConfigFollowerRollforwardRequest{
 				                      rollback, nodeVersion.lastCommitted, target, reply.changes, reply.annotations }),
 				                  SERVER_KNOBS->GET_COMMITTED_VERSION_TIMEOUT));
+				}
 			} catch (Error& e) {
 				if (e.code() == error_code_transaction_too_old) {
 					// Seeing this trace is not necessarily a problem. There
@@ -129,9 +150,20 @@ class GetCommittedVersionQuorum {
 
 	ACTOR static Future<Void> getCommittedVersionActor(GetCommittedVersionQuorum* self, ConfigFollowerInterface cfi) {
 		try {
-			ConfigFollowerGetCommittedVersionReply reply =
-			    wait(timeoutError(cfi.getCommittedVersion.getReply(ConfigFollowerGetCommittedVersionRequest{}),
+			TraceEvent("RenxuanTest1").detail("IsHostname", cfi.hostname.present()? "True":"False").log();
+			state ConfigFollowerGetCommittedVersionReply reply;
+			if(cfi.hostname.present()) {
+				wait(timeoutError(store(reply, retryGetReplyFromHostname(&cfi.getCommittedVersion,
+				                                       ConfigFollowerGetCommittedVersionRequest{},
+													   cfi.hostname.get(),
+													   WLTOKEN_CONFIGFOLLOWER_GETCOMMITTEDVERSION
+													   )),
+				                      SERVER_KNOBS->GET_COMMITTED_VERSION_TIMEOUT));
+			} else {
+				wait(timeoutError(store(reply,
+					cfi.getCommittedVersion.getReply(ConfigFollowerGetCommittedVersionRequest{})),
 			                      SERVER_KNOBS->GET_COMMITTED_VERSION_TIMEOUT));
+			}
 
 			++self->totalRepliesReceived;
 			self->largestCompactedResponse = std::max(self->largestCompactedResponse, reply.lastCompacted);
@@ -279,7 +311,12 @@ class PaxosConfigConsumerImpl {
 			std::vector<Future<Void>> compactionRequests;
 			compactionRequests.reserve(compactionRequests.size());
 			for (const auto& cfi : self->cfis) {
-				compactionRequests.push_back(cfi.compact.getReply(ConfigFollowerCompactRequest{ compactionVersion }));
+				if (cfi.hostname.present()) {
+					compactionRequests.push_back(
+						retryGetReplyFromHostname(&cfi.compact, ConfigFollowerCompactRequest{ compactionVersion }, cfi.hostname.get(), WLTOKEN_CONFIGFOLLOWER_COMPACT));
+				} else {
+					compactionRequests.push_back(cfi.compact.getReply(ConfigFollowerCompactRequest{ compactionVersion }));
+				}
 			}
 			try {
 				wait(timeoutError(waitForAll(compactionRequests), 1.0));
@@ -294,13 +331,24 @@ class PaxosConfigConsumerImpl {
 			self->resetCommittedVersionQuorum(); // TODO: This seems to fix a segfault, investigate more
 			try {
 				state Version committedVersion = wait(getCommittedVersion(self));
-				state Reference<ConfigFollowerInfo> configNodes(
-				    new ConfigFollowerInfo(self->getCommittedVersionQuorum.getReadReplicas()));
-				ConfigFollowerGetSnapshotAndChangesReply reply =
-				    wait(timeoutError(basicLoadBalance(configNodes,
-				                                       &ConfigFollowerInterface::getSnapshotAndChanges,
-				                                       ConfigFollowerGetSnapshotAndChangesRequest{ committedVersion }),
+				std::vector<ConfigFollowerInterface> configNodes = self->getCommittedVersionQuorum.getReadReplicas();
+				if (!configNodes.size()) {
+					throw timed_out();
+				}
+				state ConfigFollowerInterface configNode = configNodes[deterministicRandom()->randomInt(0, configNodes.size())];
+				state ConfigFollowerGetSnapshotAndChangesReply reply;
+				if (configNode.hostname.present()) {
+				    wait(timeoutError(store(reply, retryGetReplyFromHostname(&configNode.getSnapshotAndChanges,
+				                                       ConfigFollowerGetSnapshotAndChangesRequest{ committedVersion },
+													   configNode.hostname.get(),
+													   WLTOKEN_CONFIGFOLLOWER_GETSNAPSHOTANDCHANGES
+													   )),
 				                      SERVER_KNOBS->GET_SNAPSHOT_AND_CHANGES_TIMEOUT));
+				} else {
+					wait(timeoutError(store(reply, 
+						configNode.getSnapshotAndChanges.getReply(ConfigFollowerGetSnapshotAndChangesRequest{ committedVersion })),
+				                      SERVER_KNOBS->GET_SNAPSHOT_AND_CHANGES_TIMEOUT));
+				}
 				TraceEvent(SevDebug, "ConfigConsumerGotSnapshotAndChanges", self->id)
 				    .detail("SnapshotVersion", reply.snapshotVersion)
 				    .detail("SnapshotSize", reply.snapshot.size())
@@ -349,13 +397,24 @@ class PaxosConfigConsumerImpl {
 				// returned would be 1.
 				if (committedVersion > self->lastSeenVersion) {
 					ASSERT(self->getCommittedVersionQuorum.getReadReplicas().size() >= self->cfis.size() / 2 + 1);
-					state Reference<ConfigFollowerInfo> configNodes(
-					    new ConfigFollowerInfo(self->getCommittedVersionQuorum.getReadReplicas()));
-					ConfigFollowerGetChangesReply reply = wait(timeoutError(
-					    basicLoadBalance(configNodes,
-					                     &ConfigFollowerInterface::getChanges,
-					                     ConfigFollowerGetChangesRequest{ self->lastSeenVersion, committedVersion }),
+					std::vector<ConfigFollowerInterface> configNodes = self->getCommittedVersionQuorum.getReadReplicas();
+					if (!configNodes.size()) {
+						throw timed_out();
+					}
+					state ConfigFollowerInterface configNode = configNodes[deterministicRandom()->randomInt(0, configNodes.size())];
+					state ConfigFollowerGetChangesReply reply;
+					if (configNode.hostname.present()) {
+						wait(timeoutError(store(reply, retryGetReplyFromHostname(&configNode.getChanges,
+					                     ConfigFollowerGetChangesRequest{ self->lastSeenVersion, committedVersion },
+										 configNode.hostname.get(),
+										 WLTOKEN_CONFIGFOLLOWER_GETCHANGES
+										 )),
 					    SERVER_KNOBS->FETCH_CHANGES_TIMEOUT));
+					} else {
+						wait(timeoutError(store(reply, configNode.getChanges.getReply(
+					                     ConfigFollowerGetChangesRequest{ self->lastSeenVersion, committedVersion })),
+					    SERVER_KNOBS->FETCH_CHANGES_TIMEOUT));
+					}
 					for (const auto& versionedMutation : reply.changes) {
 						TraceEvent te(SevDebug, "ConsumerFetchedMutation", self->id);
 						te.detail("Version", versionedMutation.version)

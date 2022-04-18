@@ -122,23 +122,32 @@ struct ConsistencyCheckWorkload : TestWorkload {
 	Future<Void> setup(Database const& cx) override { return _setup(cx, this); }
 
 	ACTOR Future<Void> _setup(Database cx, ConsistencyCheckWorkload* self) {
+		TraceEvent("ConsistencyCheckStart111").log();
 		// If performing quiescent checks, wait for the database to go quiet
 		if (self->firstClient && self->performQuiescentChecks) {
+			TraceEvent("ConsistencyCheckStart222").log();
 			if (g_network->isSimulated()) {
+				TraceEvent("ConsistencyCheckStart333").log();
 				wait(timeKeeperSetDisable(cx));
+				TraceEvent("ConsistencyCheckStart444").log();
 			}
+			TraceEvent("ConsistencyCheckStart555").log();
 
 			try {
+				TraceEvent("ConsistencyCheckStart666").log();
 				wait(timeoutError(quietDatabase(cx, self->dbInfo, "ConsistencyCheckStart", 0, 1e5, 0, 0),
 				                  self->quiescentWaitTimeout)); // FIXME: should be zero?
+				TraceEvent("ConsistencyCheckStart777").log();
 			} catch (Error& e) {
 				TraceEvent("ConsistencyCheck_QuietDatabaseError").error(e);
 				self->testFailure("Unable to achieve a quiet database");
 				self->performQuiescentChecks = false;
 			}
 		}
+		TraceEvent("ConsistencyCheckStart888").log();
 
 		self->monitorConsistencyCheckSettingsActor = self->monitorConsistencyCheckSettings(cx, self);
+		TraceEvent("ConsistencyCheckStart999").log();
 		return Void();
 	}
 
@@ -308,13 +317,13 @@ struct ConsistencyCheckWorkload : TestWorkload {
 					if (!usingDesiredClasses)
 						self->testFailure("Cluster has machine(s) not using requested classes");
 
-					bool workerListCorrect = wait(self->checkWorkerList(cx, self));
-					if (!workerListCorrect)
-						self->testFailure("Worker list incorrect");
-
 					bool coordinatorsCorrect = wait(self->checkCoordinators(cx));
 					if (!coordinatorsCorrect)
 						self->testFailure("Coordinators incorrect");
+
+					bool workerListCorrect = wait(self->checkWorkerList(cx, self));
+					if (!workerListCorrect)
+						self->testFailure("Worker list incorrect");
 				}
 
 				// Get a list of key servers; verify that the TLogs and master all agree about who the key servers are
@@ -2050,6 +2059,8 @@ struct ConsistencyCheckWorkload : TestWorkload {
 			workerAddresses.insert(NetworkAddress(addr.ip, addr.port, true, addr.isTLS()));
 		}
 
+		TraceEvent("CheckWorkerList").detail("WorkerAddresses", describe(workerAddresses)).log();
+
 		std::vector<ISimulator::ProcessInfo*> all = g_simulator.getAllProcesses();
 		for (int i = 0; i < all.size(); i++) {
 			if (all[i]->isReliable() && all[i]->name == std::string("Server") &&
@@ -2096,7 +2107,8 @@ struct ConsistencyCheckWorkload : TestWorkload {
 					return false;
 				}
 
-				state ClusterConnectionString old(currentKey.get().toString());
+				ClusterConnectionString old(currentKey.get().toString());
+				state std::vector<NetworkAddress> oldCoordinators = wait(old.tryResolveHostnames());
 
 				std::vector<ProcessData> workers = wait(::getWorkers(&tr));
 
@@ -2106,7 +2118,7 @@ struct ConsistencyCheckWorkload : TestWorkload {
 				}
 
 				std::set<Optional<Standalone<StringRef>>> checkDuplicates;
-				for (const auto& addr : old.coordinators()) {
+				for (const auto& addr : oldCoordinators) {
 					auto findResult = addr_locality.find(addr);
 					if (findResult != addr_locality.end()) {
 						if (checkDuplicates.count(findResult->second.zoneId())) {

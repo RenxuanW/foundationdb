@@ -136,6 +136,7 @@ struct ChangeConfigWorkload : TestWorkload {
 					        .withPrefix(SpecialKeySpace::getModuleRange(SpecialKeySpace::MODULE::MANAGEMENT).begin)));
 					ASSERT(newCoordinatorsKey.present());
 					desiredCoordinatorsKey = newCoordinatorsKey.get().toString();
+					TraceEvent("JohnCoordinatorsChangeActor").detail("AutoCoords", desiredCoordinatorsKey).log();
 					tr.reset();
 					break;
 				} catch (Error& e) {

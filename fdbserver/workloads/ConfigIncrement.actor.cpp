@@ -106,6 +106,7 @@ class ConfigIncrementWorkload : public TestWorkload {
 		state Reference<ISingleThreadTransaction> tr = self->getTransaction(cx);
 		loop {
 			try {
+				TraceEvent("ConfigIncrementCheckBegin").log();
 				state int currentValue = wait(get(tr));
 				auto expectedValue = self->incrementActors * self->incrementsPerActor;
 				TraceEvent("ConfigIncrementCheck")
@@ -113,6 +114,7 @@ class ConfigIncrementWorkload : public TestWorkload {
 				    .detail("ExpectedValue", expectedValue);
 				return currentValue >= expectedValue; // >= because we may have maybe_committed errors
 			} catch (Error& e) {
+				TraceEvent("ConfigIncrementError").detail("Error", e.what()).log();
 				wait(tr->onError(e));
 			}
 		}

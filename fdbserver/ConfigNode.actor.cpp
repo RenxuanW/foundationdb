@@ -243,6 +243,9 @@ class ConfigNodeImpl {
 		ConfigGeneration currentGeneration = wait(getGeneration(self));
 		if (req.generation != currentGeneration) {
 			// TODO: Also send information about highest seen version
+			TraceEvent("RenxuanTooOld111")
+				.detail("Current", currentGeneration.toString())
+				.detail("Req", req.generation.toString()).log();
 			req.reply.sendError(transaction_too_old());
 			return Void();
 		}
@@ -274,6 +277,9 @@ class ConfigNodeImpl {
 	ACTOR static Future<Void> getConfigClasses(ConfigNodeImpl* self, ConfigTransactionGetConfigClassesRequest req) {
 		ConfigGeneration currentGeneration = wait(getGeneration(self));
 		if (req.generation != currentGeneration) {
+			TraceEvent("RenxuanTooOld222")
+				.detail("Current", currentGeneration.toString())
+				.detail("Req", req.generation.toString()).log();
 			req.reply.sendError(transaction_too_old());
 			return Void();
 		}
@@ -307,6 +313,9 @@ class ConfigNodeImpl {
 	ACTOR static Future<Void> getKnobs(ConfigNodeImpl* self, ConfigTransactionGetKnobsRequest req) {
 		ConfigGeneration currentGeneration = wait(getGeneration(self));
 		if (req.generation != currentGeneration) {
+			TraceEvent("RenxuanTooOld333")
+				.detail("Current", currentGeneration.toString())
+				.detail("Req", req.generation.toString()).log();
 			req.reply.sendError(transaction_too_old());
 			return Void();
 		}
@@ -407,6 +416,7 @@ class ConfigNodeImpl {
 		loop {
 			choose {
 				when(ConfigTransactionGetGenerationRequest req = waitNext(cti->getGeneration.getFuture())) {
+					TraceEvent("ConfigTransactionGetGenerationRequest").log();
 					++self->getGenerationRequests;
 					wait(getNewGeneration(self, req));
 				}
@@ -502,6 +512,9 @@ class ConfigNodeImpl {
 		}
 		state ConfigGeneration currentGeneration = wait(getGeneration(self));
 		if (req.lastKnownCommitted != currentGeneration.committedVersion) {
+			TraceEvent("RenxuanTooOld444")
+				.detail("Current", currentGeneration.committedVersion)
+				.detail("Req", req.lastKnownCommitted).log();
 			req.reply.sendError(transaction_too_old());
 			return Void();
 		}

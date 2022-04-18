@@ -2677,8 +2677,8 @@ ACTOR Future<MonitorLeaderInfo> monitorLeaderWithDelayedCandidacyImplOneGenerati
 	state int successIndex = 0;
 	state std::vector<LeaderElectionRegInterface> leaderElectionServers;
 
-	hostnames.resize(cs.hostnames.size());
-	leaderElectionServers.resize(coordinatorsSize);
+	hostnames.reserve(cs.hostnames.size());
+	leaderElectionServers.reserve(coordinatorsSize);
 	for (const auto& h : cs.hostnames) {
 		hostnames.push_back(h);
 		leaderElectionServers.push_back(LeaderElectionRegInterface(h));
@@ -2716,7 +2716,7 @@ ACTOR Future<MonitorLeaderInfo> monitorLeaderWithDelayedCandidacyImplOneGenerati
 				}
 				if (connRecord != info.intermediateConnRecord) {
 					if (!info.hasConnected) {
-						TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection")
+						TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection444")
 						    .detail("ClusterFile", connRecord->toString())
 						    .detail("StoredConnectionString", connRecord->getConnectionString().toString())
 						    .detail("CurrentConnectionString",

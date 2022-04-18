@@ -37,6 +37,7 @@ ACTOR Future<Void> submitCandidacy(Key key,
 		state Optional<LeaderInfo> li;
 
 		if (coord->hostname.present()) {
+			TraceEvent("Tianzi888").log();
 			wait(store(
 			    li,
 			    retryGetReplyFromHostname(
@@ -93,6 +94,7 @@ ACTOR Future<Void> changeLeaderCoordinators(ServerCoordinators* coordinators, Va
 	forwardRequests.reserve(coordinators->leaderElectionServers.size());
 	for (int i = 0; i < coordinators->leaderElectionServers.size(); i++) {
 		if (coordinators->leaderElectionServers[i].hostname.present()) {
+			TraceEvent("Tianzi999").log();
 			forwardRequests.push_back(
 			    retryGetReplyFromHostname(&coordinators->leaderElectionServers[i].forward,
 			                              ForwardRequest(coordinators->clusterKey, forwardingInfo),
@@ -166,7 +168,7 @@ ACTOR Future<Void> tryBecomeLeaderInternal(ServerCoordinators coordinators,
 				wait(changeLeaderCoordinators(&coordinators, leader.get().first.serializedInfo));
 
 				if (!hasConnected) {
-					TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection")
+					TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection333")
 					    .detail("ClusterFile", coordinators.ccr->toString())
 					    .detail("StoredConnectionString", coordinators.ccr->getConnectionString().toString())
 					    .detail("CurrentConnectionString", leader.get().first.serializedInfo.toString());
@@ -234,14 +236,15 @@ ACTOR Future<Void> tryBecomeLeaderInternal(ServerCoordinators coordinators,
 			    .detail("PrevChangeID", prevChangeID)
 			    .detail("NewChangeID", myInfo.changeID);
 		}
-		TraceEvent("Haozi").detail("Event", "TryBecomeLeaderStartHeartBeat")
-			.detail("Size", coordinators.leaderElectionServers.size()).log();
+		// TraceEvent("Haozi").detail("Event", "TryBecomeLeaderStartHeartBeat")
+		// 	.detail("Size", coordinators.leaderElectionServers.size()).log();
 
 		state std::vector<Future<Void>> true_heartbeats;
 		state std::vector<Future<Void>> false_heartbeats;
 		for (int i = 0; i < coordinators.leaderElectionServers.size(); i++) {
 			Future<LeaderHeartbeatReply> hb;
 			if (coordinators.leaderElectionServers[i].hostname.present()) {
+				TraceEvent("Tianzi000").log();
 				hb = retryGetReplyFromHostname(&coordinators.leaderElectionServers[i].leaderHeartbeat,
 				                               LeaderHeartbeatRequest(coordinators.clusterKey, myInfo, prevChangeID),
 				                               coordinators.leaderElectionServers[i].hostname.get(),
@@ -259,8 +262,8 @@ ACTOR Future<Void> tryBecomeLeaderInternal(ServerCoordinators coordinators,
 		state Future<Void> rate = delay(SERVER_KNOBS->HEARTBEAT_FREQUENCY, TaskPriority::CoordinationReply) ||
 		                          asyncPriorityInfo->onChange(); // SOMEDAY: Move to server side?
 
-		TraceEvent("Haozi").detail("Event", "TryBecomeLeaderWaitingHeartBeat")
-			.detail("Size", coordinators.leaderElectionServers.size()).log();
+		// TraceEvent("Haozi").detail("Event", "TryBecomeLeaderWaitingHeartBeat")
+		// 	.detail("Size", coordinators.leaderElectionServers.size()).log();
 
 		choose {
 			when(wait(quorum(true_heartbeats, true_heartbeats.size() / 2 + 1))) {

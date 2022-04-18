@@ -262,6 +262,7 @@ ACTOR Future<Void> commitBatcher(ProxyCommitData* commitData,
 		       !(batch.size() == SERVER_KNOBS->COMMIT_TRANSACTION_BATCH_COUNT_MAX || batchBytes >= desiredBytes)) {
 			choose {
 				when(CommitTransactionRequest req = waitNext(in)) {
+					TraceEvent("Haozi").detail("Event", "CommitBatcher").log();
 					// WARNING: this code is run at a high priority, so it needs to do as little work as possible
 					int bytes = getBytes(req);
 
@@ -1028,6 +1029,9 @@ ACTOR Future<Void> applyMetadataToCommittedTransactions(CommitBatchContext* self
 
 	if (!self->isMyFirstBatch &&
 	    pProxyCommitData->txnStateStore->readValue(coordinatorsKey).get().get() != self->oldCoordinators.get()) {
+		TraceEvent("JohnApplyMetadataToCommittedTransactions")
+			.detail("CK", pProxyCommitData->txnStateStore->readValue(coordinatorsKey).get().get().toString())
+			.detail("Old", self->oldCoordinators.get().toString()).log();
 		wait(brokenPromiseToNever(pProxyCommitData->db->get().clusterInterface.changeCoordinators.getReply(
 		    ChangeCoordinatorsRequest(pProxyCommitData->txnStateStore->readValue(coordinatorsKey).get().get()))));
 		ASSERT(false); // ChangeCoordinatorsRequest should always throw

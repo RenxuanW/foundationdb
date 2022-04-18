@@ -1689,6 +1689,7 @@ ACTOR static Future<Optional<std::string>> coordinatorsCommitActor(ReadYourWrite
 	if (processes_entry.first) {
 		ASSERT(processes_entry.second.present()); // no clear should be seen here
 		auto processesStr = processes_entry.second.get().toString();
+		TraceEvent("CoordinatorsCommitActor111").detail("Str", processesStr).log();
 		boost::split(process_address_or_hostname_strs, processesStr, [](char c) { return c == ','; });
 		if (!process_address_or_hostname_strs.size()) {
 			return ManagementAPIError::toJsonString(
@@ -1725,6 +1726,10 @@ ACTOR static Future<Optional<std::string>> coordinatorsCommitActor(ReadYourWrite
 	}
 
 	state std::vector<NetworkAddress> addressesVec = wait(conn.tryResolveHostnames());
+	TraceEvent(SevDebug, "SKSChangeCoordinatorsPrep")
+		.detail("ConnectionString", conn.toString())
+	    .detail("NewAddresses", describe(addressesVec)).log();
+
 	if (addressesVec.size())
 		change = specifiedQuorumChange(addressesVec);
 	else
@@ -1803,11 +1808,16 @@ ACTOR static Future<RangeResult> CoordinatorsAutoImplActor(ReadYourWritesTransac
 	state ClusterConnectionString old(currentKey.get().toString());
 	state CoordinatorsResult result = CoordinatorsResult::SUCCESS;
 
+	state std::vector<NetworkAddress> oldCoordinators = wait(old.tryResolveHostnames());
 	std::vector<NetworkAddress> _desiredCoordinators = wait(autoQuorumChange()->getDesiredCoordinators(
 	    &tr,
-	    old.coordinators(),
+	    oldCoordinators,
 	    Reference<ClusterConnectionMemoryRecord>(new ClusterConnectionMemoryRecord(old)),
 	    result));
+
+	TraceEvent("JohnCoordinatorsAutoImplActor")
+		.detail("OldCS", old.toString())
+		.detail("Old", describe(oldCoordinators)).detail("Addresses", describe(_desiredCoordinators)).log();
 
 	if (result == CoordinatorsResult::NOT_ENOUGH_MACHINES) {
 		// we could get not_enough_machines if we happen to see the database while the cluster controller is updating

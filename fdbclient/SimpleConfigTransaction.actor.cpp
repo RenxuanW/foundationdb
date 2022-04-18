@@ -38,12 +38,24 @@ class SimpleConfigTransactionImpl {
 	Database cx;
 
 	ACTOR static Future<ConfigGeneration> getGeneration(SimpleConfigTransactionImpl* self) {
+		TraceEvent("LitianGetGeneration0").log();
 		if (self->dID.present()) {
 			TraceEvent("SimpleConfigTransactionGettingReadVersion", self->dID.get());
 		}
-		ConfigTransactionGetGenerationRequest req;
-		ConfigTransactionGetGenerationReply reply =
-		    wait(retryBrokenPromise(self->cti.getGeneration, ConfigTransactionGetGenerationRequest{}));
+		state ConfigTransactionGetGenerationReply reply;
+		if (self->cti.hostname.present()) {
+			TraceEvent("LitianGetGeneration1a").log();
+			wait(store(reply,
+				retryGetReplyFromHostname(&self->cti.getGeneration, 
+					ConfigTransactionGetGenerationRequest{}, 
+					self->cti.hostname.get(), 
+					WLTOKEN_CONFIGTXN_GETGENERATION)));
+		} else {
+			TraceEvent("LitianGetGeneration1b").log();
+			wait(store(reply, 
+				retryBrokenPromise(self->cti.getGeneration, ConfigTransactionGetGenerationRequest{})));
+		}
+		TraceEvent("LitianGetGeneration2").log();
 		if (self->dID.present()) {
 			TraceEvent("SimpleConfigTransactionGotReadVersion", self->dID.get())
 			    .detail("Version", reply.generation.liveVersion);
@@ -55,15 +67,23 @@ class SimpleConfigTransactionImpl {
 		if (!self->getGenerationFuture.isValid()) {
 			self->getGenerationFuture = getGeneration(self);
 		}
+		TraceEvent("LitianGet1").log();
 		state ConfigKey configKey = ConfigKey::decodeKey(key);
 		ConfigGeneration generation = wait(self->getGenerationFuture);
+		TraceEvent("LitianGet2").log();
 		if (self->dID.present()) {
 			TraceEvent("SimpleConfigTransactionGettingValue", self->dID.get())
 			    .detail("ConfigClass", configKey.configClass)
 			    .detail("KnobName", configKey.knobName);
 		}
-		ConfigTransactionGetReply reply =
-		    wait(retryBrokenPromise(self->cti.get, ConfigTransactionGetRequest{ generation, configKey }));
+		state ConfigTransactionGetReply reply;
+		if (self->cti.hostname.present()) {
+			wait(store(reply, 
+				retryGetReplyFromHostname(&self->cti.get, ConfigTransactionGetRequest{ generation, configKey }, self->cti.hostname.get(), WLTOKEN_CONFIGTXN_GET)));
+		} else {
+		    wait(store(reply, retryBrokenPromise(self->cti.get, ConfigTransactionGetRequest{ generation, configKey })));
+		}
+		TraceEvent("LitianGet3").log();
 		if (self->dID.present()) {
 			TraceEvent("SimpleConfigTransactionGotValue", self->dID.get())
 			    .detail("Value", reply.value.get().toString());
@@ -80,8 +100,12 @@ class SimpleConfigTransactionImpl {
 			self->getGenerationFuture = getGeneration(self);
 		}
 		ConfigGeneration generation = wait(self->getGenerationFuture);
-		ConfigTransactionGetConfigClassesReply reply =
-		    wait(retryBrokenPromise(self->cti.getClasses, ConfigTransactionGetConfigClassesRequest{ generation }));
+		state ConfigTransactionGetConfigClassesReply reply;
+		if(self->cti.hostname.present()) {
+			wait(store(reply, retryGetReplyFromHostname(&self->cti.getClasses, ConfigTransactionGetConfigClassesRequest{ generation }, self->cti.hostname.get(), WLTOKEN_CONFIGTXN_GETCLASSES)));
+		} else {
+		    wait(store(reply, retryBrokenPromise(self->cti.getClasses, ConfigTransactionGetConfigClassesRequest{ generation })));
+		}
 		RangeResult result;
 		for (const auto& configClass : reply.configClasses) {
 			result.push_back_deep(result.arena(), KeyValueRef(configClass, ""_sr));
@@ -94,8 +118,12 @@ class SimpleConfigTransactionImpl {
 			self->getGenerationFuture = getGeneration(self);
 		}
 		ConfigGeneration generation = wait(self->getGenerationFuture);
-		ConfigTransactionGetKnobsReply reply =
-		    wait(retryBrokenPromise(self->cti.getKnobs, ConfigTransactionGetKnobsRequest{ generation, configClass }));
+		state ConfigTransactionGetKnobsReply reply;
+		if(self->cti.hostname.present()) {
+			wait(store(reply, retryGetReplyFromHostname(&self->cti.getKnobs, ConfigTransactionGetKnobsRequest{ generation, configClass }, self->cti.hostname.get(), WLTOKEN_CONFIGTXN_GETKNOBS)));
+		} else {
+		    wait(store(reply, retryBrokenPromise(self->cti.getKnobs, ConfigTransactionGetKnobsRequest{ generation, configClass })));
+		}
 		RangeResult result;
 		for (const auto& knobName : reply.knobNames) {
 			result.push_back_deep(result.arena(), KeyValueRef(knobName, ""_sr));
@@ -104,12 +132,21 @@ class SimpleConfigTransactionImpl {
 	}
 
 	ACTOR static Future<Void> commit(SimpleConfigTransactionImpl* self) {
+		TraceEvent("LitianCommit1").log();
 		if (!self->getGenerationFuture.isValid()) {
 			self->getGenerationFuture = getGeneration(self);
 		}
+		TraceEvent("LitianCommit2").log();
 		wait(store(self->toCommit.generation, self->getGenerationFuture));
 		self->toCommit.annotation.timestamp = now();
-		wait(retryBrokenPromise(self->cti.commit, self->toCommit));
+		TraceEvent("LitianCommit3").log();
+
+		if(self->cti.hostname.present()) {
+			wait(retryGetReplyFromHostname(&self->cti.commit, self->toCommit, self->cti.hostname.get(), WLTOKEN_CONFIGTXN_COMMIT));
+		} else {
+		    wait(retryBrokenPromise(self->cti.commit, self->toCommit));
+		}
+		TraceEvent("LitianCommit4").log();
 		self->committed = true;
 		return Void();
 	}
@@ -126,9 +163,16 @@ class SimpleConfigTransactionImpl {
 
 public:
 	SimpleConfigTransactionImpl(Database const& cx) : cx(cx) {
-		auto coordinators = cx->getConnectionRecord()->getConnectionString().coordinators();
-		std::sort(coordinators.begin(), coordinators.end());
-		cti = ConfigTransactionInterface(coordinators[0]);
+		const ClusterConnectionString& cs = cx->getConnectionRecord()->getConnectionString();
+		if (cs.coordinators().size()) {
+			TraceEvent("SimpleConfigTransactionImpl1").log();
+			std::vector<NetworkAddress> coordinators = cs.coordinators();
+			std::sort(coordinators.begin(), coordinators.end());
+			cti = ConfigTransactionInterface(coordinators[0]);
+		} else {
+			TraceEvent("SimpleConfigTransactionImpl2").log();
+			cti = ConfigTransactionInterface(cs.hostnames[0]);
+		}
 	}
 
 	SimpleConfigTransactionImpl(ConfigTransactionInterface const& cti) : cti(cti) {}

@@ -32,6 +32,7 @@ ACTOR Future<GenerationRegReadReply> waitAndSendRead(GenerationRegInterface* sta
 		wait(delay(SERVER_KNOBS->BUGGIFIED_EVENTUAL_CONSISTENCY * deterministicRandom()->random01()));
 	state GenerationRegReadReply reply;
 	if (stateServer->hostname.present()) {
+		TraceEvent("Tianzi666").log();
 		wait(store(reply, retryGetReplyFromHostname(&stateServer->read, req, stateServer->hostname.get(), WLTOKEN_GENERATIONREG_READ)));
 	} else {
 		wait(store(reply, retryBrokenPromise(stateServer->read, req)));
@@ -47,6 +48,7 @@ ACTOR Future<UniqueGeneration> waitAndSendWrite(GenerationRegInterface* stateSer
 		wait(delay(SERVER_KNOBS->BUGGIFIED_EVENTUAL_CONSISTENCY * deterministicRandom()->random01()));
 	state UniqueGeneration reply;
 	if (stateServer->hostname.present()) {
+		TraceEvent("Tianzi777").log();
 		wait(store(reply, retryGetReplyFromHostname(&stateServer->write, req, stateServer->hostname.get(), WLTOKEN_GENERATIONREG_WRITE)));
 	} else {
 		wait(store(reply, retryBrokenPromise(stateServer->write, req)));
@@ -264,9 +266,7 @@ struct MovableCoordinatedStateImpl {
 
 	ACTOR static Future<Value> read(MovableCoordinatedStateImpl* self) {
 		state MovableValue moveState;
-		TraceEvent("Tianzi1").log();
 		Value rawValue = wait(self->cs.read());
-		TraceEvent("Tianzi2").log();
 		if (rawValue.size()) {
 			BinaryReader r(rawValue, IncludeVersion());
 			if (!r.protocolVersion().hasMovableCoordinatedState()) {

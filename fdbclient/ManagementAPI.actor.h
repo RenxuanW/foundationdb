@@ -146,7 +146,7 @@ ACTOR Future<bool> setHealthyZone(Database cx, StringRef zoneId, double seconds,
 ACTOR Future<Void> waitForPrimaryDC(Database cx, StringRef dcId);
 
 // Gets the cluster connection string
-ACTOR Future<std::vector<NetworkAddress>> getCoordinators(Database cx);
+ACTOR Future<Optional<ClusterConnectionString>> getConnectionString(Database cx);
 
 void schemaCoverage(std::string const& spath, bool covered = true);
 bool schemaMatch(json_spirit::mValue const& schema,

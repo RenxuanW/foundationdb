@@ -958,6 +958,7 @@ struct SpecialKeySpaceCorrectnessWorkload : TestWorkload {
 				    process_addresses, coordinator_processes_key.get().toString(), [](char c) { return c == ','; });
 				ASSERT(process_addresses.size() == cs.coordinators().size() + cs.hostnames.size());
 				// compare the coordinator process network addresses one by one
+				state std::vector<NetworkAddress> coordinators = wait(cs.tryResolveHostnames());
 				for (const auto& network_address : cs.coordinators()) {
 					ASSERT(std::find(process_addresses.begin(), process_addresses.end(), network_address.toString()) !=
 					       process_addresses.end());
@@ -1079,8 +1080,9 @@ struct SpecialKeySpaceCorrectnessWorkload : TestWorkload {
 					state ClusterConnectionString csNew(res.get().toString());
 					ASSERT(csNew.hostnames.size() + csNew.coordinators().size() ==
 					       old_coordinators_processes.size() + 1);
+					state std::vector<NetworkAddress> newCoordinators = wait(csNew.tryResolveHostnames());
 					// verify the coordinators' addresses
-					for (const auto& network_address : csNew.coordinators()) {
+					for (const auto& network_address : newCoordinators) {
 						std::string address_str = network_address.toString();
 						ASSERT(std::find(old_coordinators_processes.begin(),
 						                 old_coordinators_processes.end(),

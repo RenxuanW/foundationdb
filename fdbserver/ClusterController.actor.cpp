@@ -1111,10 +1111,10 @@ void registerWorker(RegisterWorkerRequest req,
 	ClusterControllerPriorityInfo newPriorityInfo = req.priorityInfo;
 	newPriorityInfo.processClassFitness = newProcessClass.machineClassFitness(ProcessClass::ClusterController);
 	bool isCoordinator =
-	    (std::find(coordinatorAddresses.begin(), coordinatorAddresses.end(), req.wi.address()) !=
+	    (std::find(coordinatorAddresses.begin(), coordinatorAddresses.end(), w.address()) !=
 	     coordinatorAddresses.end()) ||
-	    (req.wi.secondaryAddress().present() &&
-	     std::find(coordinatorAddresses.begin(), coordinatorAddresses.end(), req.wi.secondaryAddress().get()) !=
+	    (w.secondaryAddress().present() &&
+	     std::find(coordinatorAddresses.begin(), coordinatorAddresses.end(), w.secondaryAddress().get()) !=
 	         coordinatorAddresses.end());
 
 	for (auto it : req.incompatiblePeers) {
@@ -1125,6 +1125,7 @@ void registerWorker(RegisterWorkerRequest req,
 	if (info == self->id_worker.end()) {
 		TraceEvent("ClusterControllerActualWorkers", self->id)
 		    .detail("WorkerId", w.id())
+			.detail("Address", w.address())
 		    .detail("ProcessId", w.locality.processId())
 		    .detail("ZoneId", w.locality.zoneId())
 		    .detail("DataHall", w.locality.dataHallId())
@@ -1136,6 +1137,7 @@ void registerWorker(RegisterWorkerRequest req,
 		TraceEvent("ClusterControllerWorkerAlreadyRegistered", self->id)
 		    .suppressFor(1.0)
 		    .detail("WorkerId", w.id())
+			.detail("Address", w.address())
 		    .detail("ProcessId", w.locality.processId())
 		    .detail("ZoneId", w.locality.zoneId())
 		    .detail("DataHall", w.locality.dataHallId())
@@ -1195,6 +1197,7 @@ void registerWorker(RegisterWorkerRequest req,
 		                                                     newPriorityInfo,
 		                                                     req.degraded,
 		                                                     req.issues);
+		TraceEvent("IdWorker").detail("Id", w.locality.processId()).detail("Address", w.address()).log();
 		if (!self->masterProcessId.present() &&
 		    w.locality.processId() == self->db.serverInfo->get().master.locality.processId()) {
 			self->masterProcessId = w.locality.processId();
@@ -2571,20 +2574,28 @@ ACTOR Future<Void> clusterControllerCore(ClusterControllerFullInterface interf,
 		when(GetWorkersRequest req = waitNext(interf.getWorkers.getFuture())) {
 			++self.getWorkersRequests;
 			std::vector<WorkerDetails> workers;
+			std::vector<NetworkAddress> addrs; 
 
 			for (auto const& [id, worker] : self.id_worker) {
+				TraceEvent("JohnGetWorkersRequest111").detail("Address", worker.details.interf.address()).log();
+
 				if ((req.flags & GetWorkersRequest::NON_EXCLUDED_PROCESSES_ONLY) &&
 				    self.db.config.isExcludedServer(worker.details.interf.addresses())) {
+					TraceEvent("JohnGetWorkersRequest222").detail("Address", worker.details.interf.address()).log();
 					continue;
 				}
 
 				if ((req.flags & GetWorkersRequest::TESTER_CLASS_ONLY) &&
 				    worker.details.processClass.classType() != ProcessClass::TesterClass) {
+					TraceEvent("JohnGetWorkersRequest333").detail("Addresses", worker.details.interf.address()).log();
 					continue;
 				}
 
 				workers.push_back(worker.details);
+				addrs.push_back(worker.details.interf.address());
 			}
+			
+			TraceEvent("JohnGetWorkersRequest444").detail("Addresses", describe(addrs)).log();
 
 			req.reply.send(workers);
 		}

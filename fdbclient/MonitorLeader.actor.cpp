@@ -504,6 +504,7 @@ ACTOR Future<Void> monitorNominee(Key key,
 	loop {
 		state Optional<LeaderInfo> li;
 		if (coord->hostname.present()) {
+			TraceEvent("Tianzi222").log();
 			wait(store(li,
 			           retryGetReplyFromHostname(&coord->getLeader,
 			                                     GetLeaderRequest(key, info->present() ? info->get().changeID : UID()),
@@ -622,7 +623,7 @@ ACTOR Future<MonitorLeaderInfo> monitorLeaderOneGeneration(Reference<IClusterCon
 			}
 			if (connRecord != info.intermediateConnRecord) {
 				if (!info.hasConnected) {
-					TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection")
+					TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection111")
 					    .detail("ClusterFile", connRecord->toString())
 					    .detail("StoredConnectionString", connRecord->getConnectionString().toString())
 					    .detail("CurrentConnectionString",
@@ -785,7 +786,7 @@ ACTOR Future<Void> monitorLeaderAndGetClientInfo(Key clusterKey,
 
 	TraceEvent("Haozi").detail("Event", "MonitorLeaderAndGetClientInfo").log();
 
-	clientLeaderServers.resize(hostnames.size() + coordinators.size());
+	clientLeaderServers.reserve(hostnames.size() + coordinators.size());
 	for (auto h : hostnames) {
 		clientLeaderServers.push_back(ClientLeaderRegInterface(h));
 	}
@@ -893,27 +894,37 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 	state std::vector<GrvProxyInterface> lastGrvProxies;
 	state std::vector<ClientLeaderRegInterface> clientLeaderServers;
 
-	clientLeaderServers.resize(coordinatorsSize);
+	clientLeaderServers.reserve(coordinatorsSize);
 	for (const auto& h : hostnames) {
+		TraceEvent("Haozi")
+			.detail("Event", "MonitorProxiesOneGenerationNewInterface111").log();
 		clientLeaderServers.push_back(ClientLeaderRegInterface(h));
 	}
 	for (const auto& c : cs.coordinators()) {
+		TraceEvent("Haozi")
+			.detail("Event", "MonitorProxiesOneGenerationNewInterface222").log();
 		clientLeaderServers.push_back(ClientLeaderRegInterface(c));
 	}
 
 	TraceEvent("Haozi")
 		.detail("Event", "MonitorProxiesOneGeneration")
 		.detail("HostnameSize", hostnames.size())
-		.detail("CoordinatorSize", cs.coordinators().size()).log();
+		.detail("CoordinatorSize", cs.coordinators().size())
+		.detail("ServerSize", clientLeaderServers.size()).log();
 
 	deterministicRandom()->randomShuffle(clientLeaderServers);
 
 	loop {
-		TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationLoop").log();
 		state ClientLeaderRegInterface clientLeaderServer = clientLeaderServers[index];
+		TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationLoopStart")
+			.detail("Index", index)
+			.detail("ServerSize", clientLeaderServers.size())
+			.detail("HasHostname", clientLeaderServer.hostname.present()).log();
 		state OpenDatabaseCoordRequest req;
 
+		// TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationBeforeSetInterface").log();
 		coordinator->set(clientLeaderServer);
+		// TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationAfterSetInterface").log();
 
 		req.clusterKey = cs.clusterKey();
 		req.hostnames = hostnames;
@@ -947,6 +958,7 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 
 		state ErrorOr<CachedSerialization<ClientDBInfo>> rep;
 		if (clientLeaderServer.hostname.present()) {
+			TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationBeforeSendRequest111").log();
 			wait(store(rep,
 			           tryGetReplyFromHostname(&clientLeaderServer.openDatabase,
 			                                   req,
@@ -954,6 +966,7 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 			                                   WLTOKEN_CLIENTLEADERREG_OPENDATABASE,
 			                                   TaskPriority::CoordinationReply)));
 		} else {
+			TraceEvent("Haozi").detail("Event", "MonitorProxiesOneGenerationBeforeSendRequest222").log();
 			wait(store(rep, clientLeaderServer.openDatabase.tryGetReply(req, TaskPriority::CoordinationReply)));
 		}
 
@@ -971,7 +984,7 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 			}
 			if (connRecord != info.intermediateConnRecord) {
 				if (!info.hasConnected) {
-					TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection")
+					TraceEvent(SevWarnAlways, "IncorrectClusterFileContentsAtConnection222")
 					    .detail("ClusterFile", connRecord->toString())
 					    .detail("StoredConnectionString", connRecord->getConnectionString().toString())
 					    .detail("CurrentConnectionString",
@@ -984,15 +997,17 @@ ACTOR Future<MonitorLeaderInfo> monitorProxiesOneGeneration(
 			info.hasConnected = true;
 			connRecord->notifyConnected();
 
-			TraceEvent("Lllllllll2").detail("CommitProxies", rep.get().read().commitProxies[0].address().toString())
-									.detail("GrvProxies", rep.get().read().grvProxies[0].address().toString()).log();
+			// TraceEvent("Lllllllll2").log();
+			TraceEvent("Lllllllll2")
+				.detail("CommitProxies0", rep.get().read().commitProxies.size()?rep.get().read().commitProxies[0].address().toString():"")
+				.detail("GrvProxies0", rep.get().read().grvProxies.size()?rep.get().read().grvProxies[0].address().toString():"").log();
 
 			auto& ni = rep.get().mutate();
 			shrinkProxyList(ni, lastCommitProxyUIDs, lastCommitProxies, lastGrvProxyUIDs, lastGrvProxies);
 			clientInfo->set(ni);
 			successIndex = index;
 		} else {
-			TraceEvent("Lllllllll3").log();
+			TraceEvent("Lllllllll3").detail("Error", rep.getError().what()).log();
 			TEST(rep.getError().code() == error_code_failed_to_progress); // Coordinator cant talk to cluster controller
 			TEST(rep.getError().code() == error_code_lookup_failed); // Coordinator hostname resolving failure
 			index = (index + 1) % coordinatorsSize;

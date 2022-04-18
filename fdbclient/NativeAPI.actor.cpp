@@ -885,6 +885,7 @@ ACTOR static Future<Void> monitorClientDBInfoChange(DatabaseContext* cx,
 		choose {
 			when(wait(clientDBInfoOnChange)) {
 				clientDBInfoOnChange = clientDBInfo->onChange();
+				TraceEvent("MonitorClientDBInfoChange").log();
 				if (clientDBInfo->get().commitProxies != curCommitProxies ||
 				    clientDBInfo->get().grvProxies != curGrvProxies) {
 					// This condition is a bit complicated. Here we want to verify that we're unable to receive a read
@@ -6031,25 +6032,33 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState,
 	state TraceInterval interval("TransactionCommit");
 	state double startTime = now();
 	state Span span("NAPI:tryCommit"_loc, trState->spanID);
+	// trState->debugID = UID(88888888,88888888);
 	state Optional<UID> debugID = trState->debugID;
 	if (debugID.present()) {
 		TraceEvent(interval.begin()).detail("Parent", debugID.get());
 	}
 	try {
 		if (CLIENT_BUGGIFY) {
+			if (debugID.present()) TraceEvent("TryCommit111").log();
 			throw deterministicRandom()->randomChoice(std::vector<Error>{
 			    not_committed(), transaction_too_old(), proxy_memory_limit_exceeded(), commit_unknown_result() });
 		}
+		if (debugID.present()) TraceEvent("TryCommit222").log();
 
 		if (req.tagSet.present() && trState->options.priority < TransactionPriority::IMMEDIATE) {
+			if (debugID.present()) TraceEvent("TryCommit333").log();
 			wait(store(req.transaction.read_snapshot, readVersion) &&
 			     store(req.commitCostEstimation, estimateCommitCosts(trState, &req.transaction)));
+			if (debugID.present()) TraceEvent("TryCommit444").log();
 		} else {
+			if (debugID.present()) TraceEvent("TryCommit555").log();
 			wait(store(req.transaction.read_snapshot, readVersion));
+			if (debugID.present()) TraceEvent("TryCommit666").log();
 		}
 
 		state Key tenantPrefix;
 		if (trState->tenant().present()) {
+			if (debugID.present()) TraceEvent("TryCommit777").log();
 			KeyRangeLocationInfo locationInfo = wait(getKeyLocation(trState,
 			                                                        ""_sr,
 			                                                        &StorageServerInterface::getValue,
@@ -6058,7 +6067,9 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState,
 			                                                        req.transaction.read_snapshot));
 			applyTenantPrefix(req, locationInfo.tenantEntry.prefix);
 			tenantPrefix = locationInfo.tenantEntry.prefix;
+			if (debugID.present()) TraceEvent("TryCommit888").log();
 		}
+		if (debugID.present()) TraceEvent("TryCommit999").log();
 
 		req.tenantInfo = trState->getTenantInfo();
 
@@ -6090,12 +6101,15 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState,
 			                         AtMostOnce::True);
 		}
 		state double grvTime = now();
+		if (debugID.present()) TraceEvent("TryCommitBeforeChoose").log();
 		choose {
 			when(wait(trState->cx->onProxiesChanged())) {
+				if (debugID.present()) TraceEvent("TryCommitProxiesChanged").log();
 				reply.cancel();
 				throw request_maybe_delivered();
 			}
 			when(CommitID ci = wait(reply)) {
+				if (debugID.present()) TraceEvent("TryCommitReplyGet").log();
 				Version v = ci.version;
 				if (v != invalidVersion) {
 					if (CLIENT_BUGGIFY) {
@@ -6589,14 +6603,33 @@ ACTOR Future<GetReadVersionReply> getConsistentReadVersion(SpanID parentSpan,
 			                                debugID);
 			state Future<Void> onProxiesChanged = cx->onProxiesChanged();
 
+			// state Future<GetReadVersionReply> reply;
+			// TraceEvent("GetConsistentReadVersionBasicLoadBalance0").log();
+
+			// Reference<GrvProxyInfo> grvProxies = cx->getGrvProxies(UseProvisionalProxies(
+			// 	                                   flags & GetReadVersionRequest::FLAG_USE_PROVISIONAL_PROXIES));
+			// TraceEvent("GetConsistentReadVersionBasicLoadBalance1").log();
+			// TraceEvent("GetConsistentReadVersionBasicLoadBalance2")
+			// 	.detail("GrvProxySize", grvProxies->size()).log();
+			// TraceEvent("GetConsistentReadVersionBasicLoadBalance3")
+			// 	.detail("GrvProxy", grvProxies->size() == 0? "n/a" :  grvProxies->getInterface(0).address().toString()).log();
+			// reply = basicLoadBalance(grvProxies,
+			//                         &GrvProxyInterface::getConsistentReadVersion,
+			// 	                               req,
+			// 	                               cx->taskID);
+
 			choose {
-				when(wait(onProxiesChanged)) { onProxiesChanged = cx->onProxiesChanged(); }
+				when(wait(onProxiesChanged)) { 
+					if (debugID.present()) TraceEvent("GetConsistentReadVersionProxiesChanged").log(); 
+					onProxiesChanged = cx->onProxiesChanged();
+				}
 				when(GetReadVersionReply v =
 				         wait(basicLoadBalance(cx->getGrvProxies(UseProvisionalProxies(
 				                                   flags & GetReadVersionRequest::FLAG_USE_PROVISIONAL_PROXIES)),
 				                               &GrvProxyInterface::getConsistentReadVersion,
 				                               req,
 				                               cx->taskID))) {
+					if (debugID.present()) TraceEvent("GetConsistentReadVersionReply").log(); 
 					if (tags.size() != 0) {
 						auto& priorityThrottledTags = cx->throttledTags[priority];
 						for (auto& tag : tags) {
@@ -6677,7 +6710,7 @@ ACTOR Future<Void> readVersionBatcher(DatabaseContext* cx,
 			when(DatabaseContext::VersionRequest req = waitNext(versionStream)) {
 				if (req.debugID.present()) {
 					if (!debugID.present()) {
-						debugID = nondeterministicRandom()->randomUniqueID();
+						debugID = UID(88888888,88888888);
 					}
 					g_traceBatch.addAttach("TransactionAttachID", req.debugID.get().first(), debugID.get().first());
 				}
@@ -6938,11 +6971,21 @@ Future<Standalone<StringRef>> Transaction::getVersionstamp() {
 }
 
 // Gets the protocol version reported by a coordinator via the protocol info interface
-ACTOR Future<ProtocolVersion> getCoordinatorProtocol(NetworkAddressList coordinatorAddresses) {
-	RequestStream<ProtocolInfoRequest> requestStream{ Endpoint::wellKnown({ coordinatorAddresses },
-		                                                                  WLTOKEN_PROTOCOL_INFO) };
-	ProtocolInfoReply reply = wait(retryBrokenPromise(requestStream, ProtocolInfoRequest{}));
-
+ACTOR Future<ProtocolVersion> getCoordinatorProtocol(Reference<AsyncVar<Optional<ClientLeaderRegInterface>> const> coordinator) {
+	RequestStream<ProtocolInfoRequest> requestStream;
+	state RequestStream<ProtocolInfoRequest> requestStream;
+	state ProtocolInfoReply reply;
+	if (coordinator->get().get().hostname.present()) {
+		TraceEvent("Tianzi333").log();
+		wait(store(reply, retryGetReplyFromHostname(&requestStream,
+															ProtocolInfoRequest{},
+															coordinator->get().get().hostname.get(),
+															WLTOKEN_PROTOCOL_INFO)));
+	} else {
+		requestStream = RequestStream<ProtocolInfoRequest>(Endpoint::wellKnown(
+				    { coordinator->get().get().getLeader.getEndpoint().addresses }, WLTOKEN_PROTOCOL_INFO));
+		wait(store(reply, retryBrokenPromise(requestStream, ProtocolInfoRequest{})));
+	}
 	return reply.version;
 }
 
@@ -6951,8 +6994,16 @@ ACTOR Future<ProtocolVersion> getCoordinatorProtocol(NetworkAddressList coordina
 // function will return with an unset result.
 // If an expected version is given, this future won't return if the actual protocol version matches the expected version
 ACTOR Future<Optional<ProtocolVersion>> getCoordinatorProtocolFromConnectPacket(
-    NetworkAddress coordinatorAddress,
+	Reference<AsyncVar<Optional<ClientLeaderRegInterface>> const> coordinator,
     Optional<ProtocolVersion> expectedVersion) {
+	state NetworkAddress coordinatorAddress;
+	if (coordinator->get().get().hostname.present()) {
+		Hostname h = coordinator->get().get().hostname.get();
+		wait(store(coordinatorAddress, h.resolveWithRetry()));
+	} else {
+		coordinatorAddress = coordinator->get().get().getLeader.getEndpoint().getPrimaryAddress();
+	} 
+
 	state Reference<AsyncVar<Optional<ProtocolVersion>> const> protocolVersion =
 	    FlowTransport::transport().getPeerProtocolAsyncVar(coordinatorAddress);
 
@@ -6987,11 +7038,10 @@ ACTOR Future<ProtocolVersion> getClusterProtocolImpl(
 		if (!coordinator->get().present()) {
 			wait(coordinator->onChange());
 		} else {
-			Endpoint coordinatorEndpoint = coordinator->get().get().getLeader.getEndpoint();
 			if (needToConnect) {
 				// Even though we typically rely on the connect packet to get the protocol version, we need to send some
 				// request in order to start a connection. This protocol version request serves that purpose.
-				protocolVersion = getCoordinatorProtocol(coordinatorEndpoint.addresses);
+				protocolVersion = getCoordinatorProtocol(coordinator);
 				needToConnect = false;
 			}
 			choose {
@@ -7008,7 +7058,7 @@ ACTOR Future<ProtocolVersion> getClusterProtocolImpl(
 				// Older versions of FDB don't have an endpoint to return the protocol version, so we get this info from
 				// the connect packet
 				when(Optional<ProtocolVersion> pv = wait(getCoordinatorProtocolFromConnectPacket(
-				         coordinatorEndpoint.getPrimaryAddress(), expectedVersion))) {
+				         coordinator, expectedVersion))) {
 					if (pv.present()) {
 						return pv.get();
 					} else {
@@ -8186,9 +8236,17 @@ ACTOR Future<bool> checkSafeExclusions(Database cx, std::vector<AddressExclusion
 	state std::vector<Future<Optional<LeaderInfo>>> leaderServers;
 	leaderServers.reserve(coordinatorList.clientLeaderServers.size());
 	for (int i = 0; i < coordinatorList.clientLeaderServers.size(); i++) {
+		if(coordinatorList.clientLeaderServers[i].hostname.present()) {
+			leaderServers.push_back(retryGetReplyFromHostname(&coordinatorList.clientLeaderServers[i].getLeader,
+		                                           GetLeaderRequest(coordinatorList.clusterKey, UID()),
+													coordinatorList.clientLeaderServers[i].hostname.get(),
+												   WLTOKEN_CLIENTLEADERREG_GETLEADER,
+		                                           TaskPriority::CoordinationReply));
+		} else {
 		leaderServers.push_back(retryBrokenPromise(coordinatorList.clientLeaderServers[i].getLeader,
 		                                           GetLeaderRequest(coordinatorList.clusterKey, UID()),
 		                                           TaskPriority::CoordinationReply));
+		}
 	}
 	// Wait for quorum so we don't dismiss live coordinators as unreachable by acting too fast
 	choose {

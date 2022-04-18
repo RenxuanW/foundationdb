@@ -80,19 +80,29 @@ Future<ErrorOr<REPLY_TYPE(Req)>> tryGetReplyFromHostname(RequestStream<Req>* to,
 	// A wrapper of tryGetReply(request), except that the request is sent to an address resolved from a hostname.
 	// If resolving fails, return lookup_failed().
 	// Otherwise, return tryGetReply(request).
+	TraceEvent("Xuanxuan111").log();
 	Optional<NetworkAddress> address = wait(hostname.resolve());
+	TraceEvent("Xuanxuan222").detail("ResolveSuccess", address.present()? "Y":"N").log();
 	if (!address.present()) {
+		TraceEvent("Xuanxuan333").log();
 		return ErrorOr<REPLY_TYPE(Req)>(lookup_failed());
 	}
-	*to = RequestStream<Req>(Endpoint::wellKnown({ address.get() }, token));
-	state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request));
+	TraceEvent("Xuanxuan444").log();
+	RequestStream<Req> realTo(Endpoint::wellKnown({ address.get() }, token));
+	TraceEvent("Xuanxuan555").log();
+	state ErrorOr<REPLY_TYPE(Req)> reply = wait(realTo.tryGetReply(request));
+	TraceEvent("Xuanxuan666").log();
 	if (reply.isError()) {
+		TraceEvent("Xuanxuan777").error(reply.getError()).log();
 		resetReply(request);
 		if (reply.getError().code() == error_code_request_maybe_delivered) {
 			// Connection failure.
+			wait(delay(FLOW_KNOBS->HOSTNAME_RESOLVE_DELAY));
 			hostname.resetToUnresolved();
 			INetworkConnections::net()->removeCachedDNS(hostname.host, hostname.service);
 		}
+	} else {
+		TraceEvent("Xuanxuan888").log();
 	}
 	return reply;
 }
@@ -110,28 +120,31 @@ Future<ErrorOr<REPLY_TYPE(Req)>> tryGetReplyFromHostname(RequestStream<Req>* to,
 	Optional<NetworkAddress> address = wait(hostname.resolve());
 	TraceEvent("Xuanxuan2").detail("ResolveSuccess", address.present()? "Y":"N").log();
 	if (!address.present()) {
+		TraceEvent("Xuanxuan3").log();
 		return ErrorOr<REPLY_TYPE(Req)>(lookup_failed());
 	}
-	*to = RequestStream<Req>(Endpoint::wellKnown({ address.get() }, token));
-	TraceEvent("Xuanxuan3").log();
-	state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request, taskID));
 	TraceEvent("Xuanxuan4").log();
+	RequestStream<Req> realTo(Endpoint::wellKnown({ address.get() }, token));
+	TraceEvent("Xuanxuan5").log();
+	state ErrorOr<REPLY_TYPE(Req)> reply = wait(realTo.tryGetReply(request, taskID));
+	TraceEvent("Xuanxuan6").log();
 	if (reply.isError()) {
-		TraceEvent("Xuanxuan5").error(reply.getError()).log();
+		TraceEvent("Xuanxuan7").error(reply.getError()).log();
 		resetReply(request);
 		if (reply.getError().code() == error_code_request_maybe_delivered) {
 			// Connection failure.
+			wait(delay(FLOW_KNOBS->HOSTNAME_RESOLVE_DELAY));
 			hostname.resetToUnresolved();
 			INetworkConnections::net()->removeCachedDNS(hostname.host, hostname.service);
 		}
 	} else {
-		TraceEvent("Xuanxuan6").log();
+		TraceEvent("Xuanxuan8").log();
 	}
 	return reply;
 }
 
 ACTOR template <class Req>
-Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
+Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(const RequestStream<Req>* to,
                                                   Req request,
                                                   Hostname hostname,
                                                   WellKnownEndpoints token) {
@@ -142,28 +155,30 @@ Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
 		TraceEvent("Laolao1").log();
 		NetworkAddress address = wait(hostname.resolveWithRetry());
 		TraceEvent("Laolao2").detail("Address", address.toString()).log();
-		*to = RequestStream<Req>(Endpoint::wellKnown({ address }, token));
-		state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request));
-		TraceEvent("Laolao3").detail("Error", reply.isError()? "True":"False").log();
+		RequestStream<Req> realTo(Endpoint::wellKnown({ address }, token));
+		TraceEvent("Laolao3").log();
+		state ErrorOr<REPLY_TYPE(Req)> reply = wait(realTo.tryGetReply(request));
+		TraceEvent("Laolao4").detail("Error", reply.isError()? "True":"False").log();
 		if (reply.isError()) {
-			TraceEvent("Laolao4").error(reply.getError()).log();
+			TraceEvent("Laolao5").error(reply.getError()).log();
 			resetReply(request);
 			if (reply.getError().code() == error_code_request_maybe_delivered) {
 				// Connection failure.
+				wait(delay(FLOW_KNOBS->HOSTNAME_RESOLVE_DELAY));
 				hostname.resetToUnresolved();
 				INetworkConnections::net()->removeCachedDNS(hostname.host, hostname.service);
 			} else {
 				throw reply.getError();
 			}
 		} else {
-			TraceEvent("Laolao5").log();
+			TraceEvent("Laolao6").log();
 			return reply.get();
 		}
 	}
 }
 
 ACTOR template <class Req>
-Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
+Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(const RequestStream<Req>* to,
                                                   Req request,
                                                   Hostname hostname,
                                                   WellKnownEndpoints token,
@@ -172,19 +187,26 @@ Future<REPLY_TYPE(Req)> retryGetReplyFromHostname(RequestStream<Req>* to,
 	// Suitable for use with hostname, where RequestStream is NOT initialized yet.
 	// Not normally useful for endpoints initialized with NetworkAddress.
 	loop {
+		TraceEvent("Laolao111").log();
 		NetworkAddress address = wait(hostname.resolveWithRetry());
-		*to = RequestStream<Req>(Endpoint::wellKnown({ address }, token));
-		state ErrorOr<REPLY_TYPE(Req)> reply = wait(to->tryGetReply(request, taskID));
+		TraceEvent("Laolao222").detail("Address", address.toString()).log();
+		RequestStream<Req> realTo(Endpoint::wellKnown({ address }, token));
+		TraceEvent("Laolao333").log();
+		state ErrorOr<REPLY_TYPE(Req)> reply = wait(realTo.tryGetReply(request, taskID));
+		TraceEvent("Laolao444").detail("Error", reply.isError()? "True":"False").log();
 		if (reply.isError()) {
+			TraceEvent("Laolao555").error(reply.getError()).log();
 			resetReply(request);
 			if (reply.getError().code() == error_code_request_maybe_delivered) {
 				// Connection failure.
+				wait(delay(FLOW_KNOBS->HOSTNAME_RESOLVE_DELAY));
 				hostname.resetToUnresolved();
 				INetworkConnections::net()->removeCachedDNS(hostname.host, hostname.service);
 			} else {
 				throw reply.getError();
 			}
 		} else {
+			TraceEvent("Laolao666").log();
 			return reply.get();
 		}
 	}

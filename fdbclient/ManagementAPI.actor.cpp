@@ -779,7 +779,7 @@ ACTOR Future<std::vector<ProcessData>> getWorkers(Database cx) {
 	}
 }
 
-ACTOR Future<std::vector<NetworkAddress>> getCoordinators(Database cx) {
+ACTOR Future<Optional<ClusterConnectionString>> getConnectionString(Database cx) {
 	state Transaction tr(cx);
 	loop {
 		try {
@@ -787,9 +787,8 @@ ACTOR Future<std::vector<NetworkAddress>> getCoordinators(Database cx) {
 			tr.setOption(FDBTransactionOptions::READ_SYSTEM_KEYS);
 			Optional<Value> currentKey = wait(tr.get(coordinatorsKey));
 			if (!currentKey.present())
-				return std::vector<NetworkAddress>();
-
-			return ClusterConnectionString(currentKey.get().toString()).coordinators();
+				return Optional<ClusterConnectionString>();
+			return ClusterConnectionString(currentKey.get().toString());
 		} catch (Error& e) {
 			wait(tr.onError(e));
 		}
@@ -815,6 +814,10 @@ ACTOR Future<Optional<CoordinatorsResult>> changeQuorumChecker(Transaction* tr,
 		return CoordinatorsResult::BAD_DATABASE_STATE; // Someone changed the "name" of the database??
 
 	state std::vector<NetworkAddress> oldCoordinators = wait(old.tryResolveHostnames());
+	TraceEvent("JohnChangeQuorumChecker111")
+		.detail("Old", describe(oldCoordinators))
+		.detail("Desired", describe(*desiredCoordinators)).log();
+
 	state CoordinatorsResult result = CoordinatorsResult::SUCCESS;
 	if (!desiredCoordinators->size()) {
 		std::vector<NetworkAddress> _desiredCoordinators = wait(change->getDesiredCoordinators(
@@ -842,6 +845,8 @@ ACTOR Future<Optional<CoordinatorsResult>> changeQuorumChecker(Transaction* tr,
 
 	state ClusterConnectionString conn(*desiredCoordinators,
 	                                   StringRef(newName + ':' + deterministicRandom()->randomAlphaNumeric(32)));
+	TraceEvent("JohnChangeQuorumChecker222")
+		.detail("CS", conn.toString()).log();
 
 	if (g_network->isSimulated()) {
 		int i = 0;
@@ -865,7 +870,7 @@ ACTOR Future<Optional<CoordinatorsResult>> changeQuorumChecker(Transaction* tr,
 		}
 	}
 
-	std::vector<Future<Optional<LeaderInfo>>> leaderServers;
+	state std::vector<Future<Optional<LeaderInfo>>> leaderServers;
 	ClientCoordinators coord(Reference<ClusterConnectionMemoryRecord>(new ClusterConnectionMemoryRecord(conn)));
 
 	leaderServers.reserve(coord.clientLeaderServers.size());
@@ -879,6 +884,8 @@ ACTOR Future<Optional<CoordinatorsResult>> changeQuorumChecker(Transaction* tr,
 		when(wait(delay(5.0))) { return CoordinatorsResult::COORDINATOR_UNREACHABLE; }
 	}
 	tr->set(coordinatorsKey, conn.toString());
+	TraceEvent("JohnChangeQuorumChecker333")
+		.detail("Size", leaderServers.size()).log();
 	return Optional<CoordinatorsResult>();
 }
 
@@ -1072,6 +1079,7 @@ struct AutoQuorumChange final : IQuorumChange {
 		leaderServers.reserve(coord.clientLeaderServers.size());
 		for (int i = 0; i < coord.clientLeaderServers.size(); i++) {
 			if (coord.clientLeaderServers[i].hostname.present()) {
+				TraceEvent("Tianzi111").log();
 				leaderServers.push_back(retryGetReplyFromHostname(&coord.clientLeaderServers[i].getLeader,
 			                                           GetLeaderRequest(coord.clusterKey, UID()),
 													   coord.clientLeaderServers[i].hostname.get(),
@@ -1145,6 +1153,15 @@ struct AutoQuorumChange final : IQuorumChange {
 			}
 			checkDuplicates.insert(findResult->second.zoneId());
 		}
+		
+		std::string workerString;
+		for(auto w : workers) {
+			workerString += w.address.toString() + ",";
+		}
+		TraceEvent("JohnGetDesired111")
+			.detail("OldCoordinators", describe(oldCoordinators))
+			.detail("Workers", workerString)
+			.detail("Desired", desiredCount).detail("CheckAcceptable", checkAcceptable? "True" : "False").log();
 
 		if (checkAcceptable) {
 			bool ok = wait(isAcceptable(self.getPtr(), tr, oldCoordinators, ccr, desiredCount, &excluded));
@@ -1167,6 +1184,9 @@ struct AutoQuorumChange final : IQuorumChange {
 			}
 			chosen.resize((chosen.size() - 1) | 1);
 		}
+
+		TraceEvent("JohnGetDesired222")
+			.detail("Chosen", describe(chosen)).log();
 
 		return chosen;
 	}
@@ -1995,6 +2015,7 @@ ACTOR Future<Void> timeKeeperSetDisable(Database cx) {
 			tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 			tr.set(timeKeeperDisableKey, StringRef());
+			tr.trState->debugID = UID(88888888,88888888);
 			wait(tr.commit());
 			return Void();
 		} catch (Error& e) {

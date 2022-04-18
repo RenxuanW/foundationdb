@@ -900,15 +900,14 @@ struct serializable_traits<RequestStream<T>> : std::true_type {
 		if constexpr (Archiver::isDeserializing) {
 			Endpoint endpoint;
 			serializer(ar, endpoint);
-			if (endpoint.isValid()) {
-				stream = RequestStream<T>(endpoint);
-			}
+			stream = RequestStream<T>(endpoint);
 		} else {
-			Endpoint ep;
-			if (stream.endpointValid()) {
-				ep = stream.getEndpoint();
-			}
+			const auto& ep = stream.getEndpoint();
 			serializer(ar, ep);
+			if constexpr (Archiver::isSerializing) { // Don't assert this when collecting vtable for flatbuffers
+				UNSTOPPABLE_ASSERT(ep.getPrimaryAddress()
+				                       .isValid()); // No serializing PromiseStreams on a client with no public address
+			}
 		}
 	}
 };

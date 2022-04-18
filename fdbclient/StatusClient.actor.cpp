@@ -314,6 +314,7 @@ ACTOR Future<Optional<StatusObject>> clientCoordinatorsStatusFetcher(Reference<I
 		leaderServers.reserve(coord.clientLeaderServers.size());
 		for (int i = 0; i < coord.clientLeaderServers.size(); i++) {
 			if (coord.clientLeaderServers[i].hostname.present()) {
+				TraceEvent("Tianzi444").log();
 				leaderServers.push_back(retryGetReplyFromHostname(&coord.clientLeaderServers[i].getLeader,
 			                                           GetLeaderRequest(coord.clusterKey, UID()),
 													   coord.clientLeaderServers[i].hostname.get(),
@@ -331,6 +332,7 @@ ACTOR Future<Optional<StatusObject>> clientCoordinatorsStatusFetcher(Reference<I
 		for (int i = 0; i < coord.clientLeaderServers.size(); i++) {
 			RequestStream<ProtocolInfoRequest> requestStream;
 			if (coord.clientLeaderServers[i].hostname.present()) {
+				TraceEvent("Tianzi555").log();
 				coordProtocols.push_back(retryGetReplyFromHostname(&requestStream,
 				                                                   ProtocolInfoRequest{},
 				                                                   coord.clientLeaderServers[i].hostname.get(),

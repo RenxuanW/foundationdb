@@ -1963,7 +1963,7 @@ void setupSimulatedSystem(std::vector<Future<Void>>* systemActors,
 	TEST(!useIPv6); // Use IPv4
 
 	// TODO(renxuan): Use hostname 25% of the time, unless it is disabled
-	bool useHostname = false; // !testConfig.disableHostname && deterministicRandom()->random01() < 0.25;
+	bool useHostname = !testConfig.disableHostname;
 	TEST(useHostname); // Use hostname
 	TEST(!useHostname); // Use IP address
 	NetworkAddressFromHostname fromHostname =

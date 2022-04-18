@@ -22,8 +22,6 @@
 #include "fdbclient/PaxosConfigTransaction.h"
 #include "flow/actorcompiler.h" // must be last include
 
-using ConfigTransactionInfo = ModelInterface<ConfigTransactionInterface>;
-
 class CommitQuorum {
 	ActorCollection actors{ false };
 	std::vector<ConfigTransactionInterface> ctis;
@@ -59,8 +57,13 @@ class CommitQuorum {
 	                                          ConfigGeneration generation,
 	                                          ConfigTransactionInterface cti) {
 		try {
-			wait(timeoutError(cti.commit.getReply(self->getCommitRequest(generation)),
+			if (cti.hostname.present()) {
+				wait(timeoutError(retryGetReplyFromHostname(&cti.commit, self->getCommitRequest(generation), cti.hostname.get(), WLTOKEN_CONFIGTXN_COMMIT),
 			                  CLIENT_KNOBS->COMMIT_QUORUM_TIMEOUT));
+			} else {
+				wait(timeoutError(cti.commit.getReply(self->getCommitRequest(generation)),
+			                  CLIENT_KNOBS->COMMIT_QUORUM_TIMEOUT));
+			}
 			++self->successful;
 		} catch (Error& e) {
 			// self might be destroyed if this actor is cancelled
@@ -122,10 +125,20 @@ class GetGenerationQuorum {
 	ACTOR static Future<Void> addRequestActor(GetGenerationQuorum* self, ConfigTransactionInterface cti) {
 		loop {
 			try {
-				ConfigTransactionGetGenerationReply reply = wait(timeoutError(
-				    cti.getGeneration.getReply(ConfigTransactionGetGenerationRequest{ self->lastSeenLiveVersion }),
+				state ConfigTransactionGetGenerationReply reply;
+				if (cti.hostname.present()) {
+					TraceEvent("AddRequestActor1a").log();
+					wait(timeoutError(store(reply,
+						retryGetReplyFromHostname(&cti.getGeneration, ConfigTransactionGetGenerationRequest{ self->lastSeenLiveVersion }, cti.hostname.get(), WLTOKEN_CONFIGTXN_GETGENERATION)),
 				    CLIENT_KNOBS->GET_GENERATION_QUORUM_TIMEOUT));
+				} else {
+					TraceEvent("AddRequestActor1b").log();
+				 	wait(timeoutError(store(reply,
+				    cti.getGeneration.getReply(ConfigTransactionGetGenerationRequest{ self->lastSeenLiveVersion })),
+				    CLIENT_KNOBS->GET_GENERATION_QUORUM_TIMEOUT));
+				}
 
+				TraceEvent("AddRequestActor2").log();
 				++self->totalRepliesReceived;
 				auto gen = reply.generation;
 				self->lastSeenLiveVersion =
@@ -134,15 +147,18 @@ class GetGenerationQuorum {
 				replicas.push_back(cti);
 				self->maxAgreement = std::max(replicas.size(), self->maxAgreement);
 				if (replicas.size() >= self->ctis.size() / 2 + 1 && !self->result.isSet()) {
+					TraceEvent("AddRequestActor3a").log();
 					self->result.send(gen);
 				} else if (self->maxAgreement + (self->ctis.size() - self->totalRepliesReceived) <
 				           (self->ctis.size() / 2 + 1)) {
+					TraceEvent("AddRequestActor3b").log();
 					if (!self->result.isError()) {
 						self->result.sendError(failed_to_reach_quorum());
 					}
 				}
 				break;
 			} catch (Error& e) {
+				TraceEvent("AddRequestActor4").detail("Error", e.what()).log();
 				if (e.code() == error_code_broken_promise) {
 					continue;
 				} else if (e.code() == error_code_timed_out) {
@@ -168,10 +184,13 @@ class GetGenerationQuorum {
 			}
 			try {
 				choose {
-					when(ConfigGeneration generation = wait(self->result.getFuture())) { return generation; }
+					when(ConfigGeneration generation = wait(self->result.getFuture())) {
+						TraceEvent("GetGenerationActor").detail("Gen", generation.toString()).log();
+						 return generation; }
 					when(wait(self->actors.getResult())) { ASSERT(false); }
 				}
 			} catch (Error& e) {
+				TraceEvent("GetGenerationActorError").detail("Error", e.what()).log();
 				if (e.code() == error_code_failed_to_reach_quorum) {
 					TEST(true); // Failed to reach quorum getting generation
 					wait(delayJittered(
@@ -226,19 +245,37 @@ class PaxosConfigTransactionImpl {
 		loop {
 			try {
 				ConfigGeneration generation = wait(self->getGenerationQuorum.getGeneration());
-				state Reference<ConfigTransactionInfo> configNodes(
-				    new ConfigTransactionInfo(self->getGenerationQuorum.getReadReplicas()));
-				ConfigTransactionGetReply reply =
-				    wait(timeoutError(basicLoadBalance(configNodes,
-				                                       &ConfigTransactionInterface::get,
-				                                       ConfigTransactionGetRequest{ generation, configKey }),
+				TraceEvent("RenxuanGet1").detail("Gen", generation.toString()).log();
+				std::vector<ConfigTransactionInterface> configNodes = self->getGenerationQuorum.getReadReplicas();
+				if (!configNodes.size()) {
+					TraceEvent("RenxuanGetAAA").log();
+					throw timed_out();
+				}
+				state ConfigTransactionInterface configNode = configNodes[deterministicRandom()->randomInt(0, configNodes.size())];
+				TraceEvent("RenxuanGet2").log();
+				state ConfigTransactionGetReply reply;
+				if (configNode.hostname.present()) {
+				    wait(timeoutError(store(reply, retryGetReplyFromHostname(&configNode.get,
+				                                       ConfigTransactionGetRequest{ generation, configKey },
+													   configNode.hostname.get(),
+													   WLTOKEN_CONFIGTXN_GET
+													   )),
 				                      CLIENT_KNOBS->GET_KNOB_TIMEOUT));
+				} else {
+					wait(timeoutError(store(reply, 
+						configNode.get.getReply(ConfigTransactionGetRequest{ generation, configKey })),
+				                      CLIENT_KNOBS->GET_KNOB_TIMEOUT));
+				}
+				TraceEvent("RenxuanGet3").log();
 				if (reply.value.present()) {
+					TraceEvent("RenxuanGet4").log();
 					return reply.value.get().toValue();
 				} else {
+					TraceEvent("RenxuanGet5").log();
 					return Optional<Value>{};
 				}
 			} catch (Error& e) {
+				TraceEvent("RenxuanGetError").detail("Error", e.what()).log();
 				if (e.code() != error_code_timed_out && e.code() != error_code_broken_promise) {
 					throw;
 				}
@@ -249,12 +286,19 @@ class PaxosConfigTransactionImpl {
 
 	ACTOR static Future<RangeResult> getConfigClasses(PaxosConfigTransactionImpl* self) {
 		ConfigGeneration generation = wait(self->getGenerationQuorum.getGeneration());
-		state Reference<ConfigTransactionInfo> configNodes(
-		    new ConfigTransactionInfo(self->getGenerationQuorum.getReadReplicas()));
-		ConfigTransactionGetConfigClassesReply reply =
-		    wait(basicLoadBalance(configNodes,
-		                          &ConfigTransactionInterface::getClasses,
-		                          ConfigTransactionGetConfigClassesRequest{ generation }));
+		std::vector<ConfigTransactionInterface> configNodes = self->getGenerationQuorum.getReadReplicas();
+		state ConfigTransactionInterface configNode = configNodes[deterministicRandom()->randomInt(0, configNodes.size())];
+		state ConfigTransactionGetConfigClassesReply reply;
+		if (configNode.hostname.present()) {
+			wait(store(reply, retryGetReplyFromHostname(&configNode.getClasses,
+												ConfigTransactionGetConfigClassesRequest{ generation },
+												configNode.hostname.get(),
+												WLTOKEN_CONFIGTXN_GETCLASSES
+												)));
+		} else {
+			wait(store(reply, 
+				configNode.getClasses.getReply(ConfigTransactionGetConfigClassesRequest{ generation })));
+		}
 		RangeResult result;
 		result.reserve(result.arena(), reply.configClasses.size());
 		for (const auto& configClass : reply.configClasses) {
@@ -265,12 +309,19 @@ class PaxosConfigTransactionImpl {
 
 	ACTOR static Future<RangeResult> getKnobs(PaxosConfigTransactionImpl* self, Optional<Key> configClass) {
 		ConfigGeneration generation = wait(self->getGenerationQuorum.getGeneration());
-		state Reference<ConfigTransactionInfo> configNodes(
-		    new ConfigTransactionInfo(self->getGenerationQuorum.getReadReplicas()));
-		ConfigTransactionGetKnobsReply reply =
-		    wait(basicLoadBalance(configNodes,
-		                          &ConfigTransactionInterface::getKnobs,
-		                          ConfigTransactionGetKnobsRequest{ generation, configClass }));
+		std::vector<ConfigTransactionInterface> configNodes = self->getGenerationQuorum.getReadReplicas();
+		state ConfigTransactionInterface configNode = configNodes[deterministicRandom()->randomInt(0, configNodes.size())];
+		state ConfigTransactionGetKnobsReply reply;
+		if (configNode.hostname.present()) {
+			wait(store(reply, retryGetReplyFromHostname(&configNode.getKnobs,
+												ConfigTransactionGetKnobsRequest{ generation, configClass },
+												configNode.hostname.get(),
+												WLTOKEN_CONFIGTXN_GETKNOBS
+												)));
+		} else {
+			wait(store(reply, 
+				configNode.getKnobs.getReply(ConfigTransactionGetKnobsRequest{ generation, configClass })));
+		}
 		RangeResult result;
 		result.reserve(result.arena(), reply.knobNames.size());
 		for (const auto& knobName : reply.knobNames) {
@@ -366,10 +417,17 @@ public:
 	Future<Void> commit() { return commit(this); }
 
 	PaxosConfigTransactionImpl(Database const& cx) : cx(cx) {
-		auto coordinators = cx->getConnectionRecord()->getConnectionString().coordinators();
-		ctis.reserve(coordinators.size());
-		for (const auto& coordinator : coordinators) {
-			ctis.emplace_back(coordinator);
+		const ClusterConnectionString& cs = cx->getConnectionRecord()->getConnectionString();
+		TraceEvent("PaxosConfigTransactionImpl")
+			.detail("CS", cs.toString())
+			.detail("Hostnames", cs.hostnames.size())
+			.detail("Coordinators", cs.coordinators().size()).log();
+		ctis.reserve(cs.hostnames.size() + cs.coordinators().size());
+		for (const auto& h : cs.hostnames) {
+			ctis.emplace_back(h);
+		}
+		for (const auto& c : cs.coordinators()) {
+			ctis.emplace_back(c);
 		}
 		getGenerationQuorum = GetGenerationQuorum{ ctis };
 		commitQuorum = CommitQuorum{ ctis };
